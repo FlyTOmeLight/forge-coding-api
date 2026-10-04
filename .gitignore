@@ -1,0 +1,11 @@
+.local/
+bin/
+*.test
+coverage.out
+.DS_Store
+__pycache__/
+*.pyc
+.env
+
+bin/
+**/__pycache__/

@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  replicas: {{ .Values.replicas }}
+  selector: {matchLabels: {app: {{ .Release.Name }}-api}}
+  template:
+    metadata:
+      annotations:
+        forge/config-revision: {{ .Values.configRevision | default "initial" | quote }}
+      labels: {app: {{ .Release.Name }}-api}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/forge]
+          args: [migrate]
+          envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/forge, api]
+          envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 512Mi}
+          ports: [{containerPort: 8080}]
+          readinessProbe: {tcpSocket: {port: 8080}, initialDelaySeconds: 2}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-dispatcher
+spec:
+  replicas: {{ .Values.replicas }}
+  selector: {matchLabels: {app: {{ .Release.Name }}-dispatcher}}
+  template:
+    metadata:
+      annotations:
+        forge/config-revision: {{ .Values.configRevision | default "initial" | quote }}
+      labels: {app: {{ .Release.Name }}-dispatcher}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
+      containers:
+        - name: dispatcher
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/forge, dispatcher]
+          envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector: {app: {{ .Release.Name }}-api}
+  ports: [{port: 80, targetPort: 8080}]

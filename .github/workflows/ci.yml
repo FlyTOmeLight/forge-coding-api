@@ -1,0 +1,29 @@
+name: Coding checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: coding_test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/coding_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make integration build
+      - run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - uses: azure/setup-helm@v4.3.0
+      - run: helm lint charts/forge-coding --set existingSecret=test,database.existingSecret=test
+      - run: helm lint charts/forge-coding-tools --set existingSecret=test
+      - run: docker build -t forge-coding-api:ci .

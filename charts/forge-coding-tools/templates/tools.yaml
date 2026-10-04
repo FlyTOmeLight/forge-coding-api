@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: {{ .Release.Name }}-workspace}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: {{ .Values.storage }}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ .Release.Name }}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: {{ .Release.Name }}}}
+  template:
+    metadata: {labels: {app: {{ .Release.Name }}}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+      containers:
+        - name: tools
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "2", memory: 1Gi}}
+          volumeMounts: [{name: workspace, mountPath: /workspace}, {name: tmp, mountPath: /tmp}]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-workspace}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ .Release.Name }}}
+spec:
+  selector: {app: {{ .Release.Name }}}
+  ports: [{port: 80, targetPort: 8080}]
