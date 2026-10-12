@@ -10,6 +10,10 @@ import (
 )
 
 func (a *App) request(ctx context.Context, method, endpoint, token string, body, target any) error {
+	return a.requestLimited(ctx, method, endpoint, token, body, target, 4<<20)
+}
+
+func (a *App) requestLimited(ctx context.Context, method, endpoint, token string, body, target any, limit int64) error {
 	var b bytes.Buffer
 	if body != nil {
 		if e := json.NewEncoder(&b).Encode(body); e != nil {
@@ -44,7 +48,7 @@ func (a *App) request(ctx context.Context, method, endpoint, token string, body,
 	if target == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(target)
+	return json.NewDecoder(io.LimitReader(response.Body, limit)).Decode(target)
 }
 func (a *App) authorized(fn func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

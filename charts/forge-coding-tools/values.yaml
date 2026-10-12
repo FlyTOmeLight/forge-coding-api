@@ -1,5 +1,0 @@
-image:
-  repository: forge-coding-tools
-  tag: dev
-existingSecret: ""
-storage: 2Gi

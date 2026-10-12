@@ -1,0 +1,254 @@
+package coding
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"net/http"
+
+	"strings"
+	"time"
+
+	"github.com/FlyTOmeLight/forge-coding-api/internal/remote"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
+)
+
+type deliveryState struct {
+	Finish   json.RawMessage           `json:"finishRequest"`
+	Baseline []Object                  `json:"baseline"`
+	Artifact *workspace.Artifact       `json:"artifact"`
+	Checks   []Object                  `json:"deliveryChecks"`
+	Receipt  *workspace.PublishReceipt `json:"publication"`
+}
+
+func (a *App) publicationPermit(w http.ResponseWriter, r *http.Request) {
+	var t CodingTask
+	var epoch int64
+	var task string
+	err := a.DB.QueryRow(r.Context(), `SELECT task_id,epoch FROM coding_runs WHERE id=$1 AND status='Delivering'`, r.PathValue("run")).Scan(&task, &epoch)
+	if err != nil {
+		fail(w, problem(409, "STALE_EXECUTION", "Delivery round is not active"))
+		return
+	}
+	t, err = scanTask(a.DB.QueryRow(r.Context(), `SELECT `+taskColumns+` FROM coding_tasks WHERE id=$1`, task))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	level, err := a.taskLevel(r.Context(), t.OwnerID, t.TenantID, t.ProjectID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if level < 30 || t.Control != "Agent" || t.Epoch != epoch || t.ActiveRun == nil || *t.ActiveRun != r.PathValue("run") {
+		fail(w, problem(409, "EXECUTION_REVOKED", "Publication permission was revoked"))
+		return
+	}
+	JSON(w, 200, Object{"allowed": true})
+}
+func (a *App) reconcileDelivery(ctx context.Context, id string) (resultErr error) {
+	var taskID string
+	defer func() {
+		var failed *workspace.OperationFailed
+		if errors.As(resultErr, &failed) && failed.Phase != "publish" {
+			if stopErr := a.Workspaces.StopAll(ctx, taskID, id); stopErr != nil {
+				resultErr = stopErr
+				return
+			}
+			var task, worker string
+			var epoch int64
+			if err := a.DB.QueryRow(ctx, `SELECT task_id,runtime_id,epoch FROM coding_runs WHERE id=$1`, id).Scan(&task, &worker, &epoch); err != nil {
+				resultErr = err
+				return
+			}
+			_, resultErr = a.recordDelivery(ctx, task, taskRunRequest{RunID: id, Worker: worker, Epoch: epoch, Status: "Stopped", Output: mustJSON(Object{"runtimeStatus": "Failed", "error": failed.Error()})})
+		}
+	}()
+	var runtime string
+	var epoch int64
+	var configRaw, output []byte
+	var created time.Time
+	err := a.DB.QueryRow(ctx, `SELECT task_id,runtime_id,epoch,config_snapshot,output,created_at FROM coding_runs WHERE id=$1 AND status='Delivering'`, id).Scan(&taskID, &runtime, &epoch, &configRaw, &output, &created)
+	if err != nil {
+		return err
+	}
+	t, err := scanTask(a.DB.QueryRow(ctx, `SELECT `+taskColumns+` FROM coding_tasks WHERE id=$1`, taskID))
+	if err != nil {
+		return err
+	}
+	level, err := a.taskLevel(ctx, t.OwnerID, t.TenantID, t.ProjectID)
+	if err != nil {
+		return err
+	}
+	if t.Control != "Agent" || t.Epoch != epoch || level < 30 {
+		return errors.New("delivery permission was revoked")
+	}
+	var cfg CodingSettings
+	var state deliveryState
+	if err = json.Unmarshal(configRaw, &cfg); err != nil {
+		return err
+	}
+	if err = json.Unmarshal(output, &state); err != nil {
+		return err
+	}
+	var finish struct {
+		Summary  string          `json:"summary"`
+		Judgment json.RawMessage `json:"judgment"`
+	}
+	if err = json.Unmarshal(state.Finish, &finish); err != nil {
+		return err
+	}
+	repository, err := a.roundRepository(ctx, t)
+	if err != nil {
+		return err
+	}
+	scopes, _ := json.Marshal(cfg.AllowedPaths)
+	env := map[string]string{"REPOSITORY_URL": repository.URL, "BASE_HEAD": t.Head, "WORK_BRANCH": t.Branch, "ALLOWED_PATHS": string(scopes), "SUMMARY": finish.Summary, "COMMIT_DATE": created.UTC().Format(time.RFC3339), "EXPECTED_REMOTE_HEAD": t.Head, "PERMIT_URL": strings.TrimRight(a.Config.SandboxGatewayURL, "/") + "/internal/v1/rounds/" + id + "/publication-permit"}
+	if t.MRIID == 0 {
+		project, err := a.project(ctx, t.TenantID, t.ProjectID)
+		if err != nil {
+			return err
+		}
+		_, err = a.GitLab.Branch(ctx, project.GitLabID, t.Branch)
+		if remote.IsStatus(err, 404) {
+			env["EXPECTED_REMOTE_HEAD"] = ""
+		} else if err != nil {
+			return err
+		}
+	}
+
+	save := func(key string, value any) error {
+		_, err := a.DB.Exec(ctx, `UPDATE coding_runs SET output=output || jsonb_build_object($2::text,$3::jsonb) WHERE id=$1 AND status='Delivering'`, id, key, mustJSON(value))
+		return err
+	}
+	if state.Artifact == nil {
+		if err = a.Workspaces.Pause(ctx, t.ID, id); err != nil {
+			return err
+		}
+		raw, err := a.Workspaces.RunJob(ctx, t.ID, id, "snapshot", env)
+		if errors.Is(err, workspace.ErrPreparing) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err = a.Workspaces.Resume(ctx, t.ID, id); err != nil {
+			return err
+		}
+		var artifact workspace.Artifact
+		if err = json.Unmarshal(raw, &artifact); err != nil {
+			return err
+		}
+		if err = save("expectedHead", artifact.ExpectedHead); err != nil {
+			return err
+		}
+		return save("artifact", artifact)
+	}
+	if state.Checks == nil {
+		endpoint, err := a.Workspaces.Verifier(ctx, t.ID, id)
+		if errors.Is(err, workspace.ErrPreparing) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		checks, err := runAIOChecks(ctx, endpoint, cfg.Checks)
+		if err != nil {
+			return err
+		}
+		if err = save("deliveryChecks", checks); err != nil {
+			return err
+		}
+		return a.Workspaces.Stop(ctx, id+"-verify")
+	}
+	if err = a.Workspaces.Stop(ctx, id+"-verify"); err != nil {
+		return err
+	}
+	if state.Receipt == nil {
+		if err = a.Workspaces.Pause(ctx, t.ID, id); err != nil {
+			return err
+		}
+		raw, err := a.Workspaces.RunJob(ctx, t.ID, id, "publish", env)
+		if errors.Is(err, workspace.ErrPreparing) {
+			return nil
+		}
+		if err != nil {
+			var failed *workspace.OperationFailed
+			if !errors.As(err, &failed) {
+				return err
+			}
+			project, lookupErr := a.project(ctx, t.TenantID, t.ProjectID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			branch, lookupErr := a.GitLab.Branch(ctx, project.GitLabID, t.Branch)
+			if lookupErr != nil && !remote.IsStatus(lookupErr, 404) {
+				return lookupErr
+			}
+			if branch.Commit.ID == state.Artifact.ExpectedHead {
+				if err = a.Workspaces.Stop(ctx, t.ID); err != nil {
+					return err
+				}
+				return save("publication", workspace.PublishReceipt{Head: branch.Commit.ID, Tree: state.Artifact.Tree, Patch: state.Artifact.Patch, Changed: len(state.Artifact.Changed) > 0})
+			}
+			if stopErr := a.Workspaces.StopAll(ctx, taskID, id); stopErr != nil {
+				return stopErr
+			}
+			_, recordErr := a.recordDelivery(ctx, t.ID, taskRunRequest{RunID: id, Worker: runtime, Epoch: epoch, Status: "Stopped", Output: mustJSON(Object{"runtimeStatus": "Failed", "error": failed.Error(), "remoteHead": branch.Commit.ID})})
+			return recordErr
+		}
+		if err = a.Workspaces.Resume(ctx, t.ID, id); err != nil {
+			return err
+		}
+		var receipt workspace.PublishReceipt
+		if err = json.Unmarshal(raw, &receipt); err != nil {
+			return err
+		}
+		return save("publication", receipt)
+	}
+	if !state.Receipt.Changed && t.MRIID == 0 {
+		return &workspace.OperationFailed{Phase: "delivery", Detail: "No code changes; an empty MR cannot be created"}
+	}
+	project, err := a.project(ctx, t.TenantID, t.ProjectID)
+	if err != nil {
+		return err
+	}
+	iid := t.MRIID
+	if iid == 0 {
+		// Query by source branch before creation to reconcile an earlier successful
+		// MR creation whose local result was lost.
+		existing, err := a.GitLab.SourceMergeRequests(ctx, project.GitLabID, t.Branch)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 1 {
+			return &workspace.OperationFailed{Phase: "delivery", Detail: "Multiple MRs exist for the task branch"}
+		}
+		if len(existing) == 1 {
+			iid = existing[0].IID
+		} else {
+			mr, err := a.GitLab.CreateDraftMergeRequest(ctx, project.GitLabID, t.Branch, t.TargetBranch, t.Title, finish.Summary)
+			if err != nil {
+				return err
+			}
+			iid = mr.IID
+		}
+	}
+	passed := true
+	for _, check := range state.Checks {
+		if ok, _ := check["passed"].(bool); !ok {
+			passed = false
+		}
+	}
+	status := "Passed"
+	if !passed {
+		status = "Failed"
+	}
+	if err = a.Workspaces.Published(ctx, t.ID, state.Receipt.Head); err != nil {
+		return err
+	}
+	body := taskRunRequest{RunID: id, Worker: runtime, Epoch: epoch, Head: state.Receipt.Head, MRIID: iid, Status: status, Output: mustJSON(Object{"patch": state.Receipt.Patch, "checksCommit": state.Receipt.Head, "configVersion": cfg.Version, "baseline": state.Baseline, "summary": finish.Summary, "judgment": finish.Judgment, "checks": []Object{{"passed": passed, "commands": state.Checks}}, "candidateTree": state.Artifact.Tree})}
+	_, err = a.recordDelivery(ctx, t.ID, body)
+	return err
+}

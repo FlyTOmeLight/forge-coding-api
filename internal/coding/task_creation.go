@@ -12,7 +12,7 @@ import (
 )
 
 func (a *App) readyTaskSettings(ctx context.Context, t CodingTask) (CodingSettings, error) {
-	if _, e := a.toolEndpoint(ctx, t.TenantID, t.ProjectID); e != nil {
+	if e := a.requireProjectExecutor(ctx, t.TenantID, t.ProjectID); e != nil {
 		return CodingSettings{}, e
 	}
 	c, e := a.codingSettings(ctx, t.TenantID, t.ProjectID)
@@ -23,7 +23,18 @@ func (a *App) readyTaskSettings(ctx context.Context, t CodingTask) (CodingSettin
 		return c, e
 	}
 	if c.CheckedAt == nil {
-		return c, problem(409, "PROJECT_NOT_READY", "请先由项目管理员检查仓库与模型接入")
+		return c, problem(409, "PROJECT_NOT_READY", "请先由项目管理员检查仓库与 Agent 接入")
+	}
+	var boundAgent string
+	e = a.DB.QueryRow(ctx, `SELECT config_snapshot->>'agentID' FROM coding_runs WHERE task_id=$1 AND execution_snapshot IS NOT NULL AND coalesce(config_snapshot->>'agentID','')<>'' ORDER BY created_at,id LIMIT 1`, t.ID).Scan(&boundAgent)
+	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+		return c, e
+	}
+	if boundAgent != "" && boundAgent != c.AgentID {
+		return c, problem(409, "TASK_AGENT_CHANGED", "此任务已绑定其他 Agent。请恢复原 Agent 绑定；可选择该 Agent 的新发布版本")
+	}
+	if e = a.checkAgentBinding(ctx, t.TenantID, t.ProjectID, &c); e != nil {
+		return c, e
 	}
 	if t.BaseBranch != "" {
 		c.BaseBranch = t.BaseBranch
@@ -34,7 +45,18 @@ func (a *App) readyTaskSettings(ctx context.Context, t CodingTask) (CodingSettin
 // A task has a branch from creation, and gains an MR only after code changes exist.
 func (a *App) currentTaskMR(ctx context.Context, project int64, t CodingTask) (remote.MergeRequest, error) {
 	if t.MRIID > 0 {
-		return a.GitLab.MergeRequest(ctx, project, t.MRIID)
+		mr, err := a.GitLab.MergeRequest(ctx, project, t.MRIID)
+		if err != nil || mr.State != "opened" {
+			return mr, err
+		}
+		// MR diff metadata can lag a completed push. Delivery and background sync
+		// share the live source ref so sync cannot undo a just-verified delivery.
+		branch, err := a.GitLab.Branch(ctx, project, mr.Source)
+		if err != nil {
+			return remote.MergeRequest{}, err
+		}
+		mr.Head = branch.Commit.ID
+		return mr, nil
 	}
 	b, e := a.GitLab.Branch(ctx, project, t.Branch)
 	if remote.IsStatus(e, 404) {
@@ -180,4 +202,28 @@ func (a *App) createProblemTask(w http.ResponseWriter, r *http.Request, u User) 
 		return
 	}
 	JSON(w, 201, t)
+}
+
+// Readiness follows the reviewed task revision; a new execution must return to draft.
+func (a *App) setTaskMRDraft(ctx context.Context, project int64, t CodingTask, mr remote.MergeRequest, draft bool) error {
+	matches := func(m remote.MergeRequest) bool {
+		return m.IID == t.MRIID && m.State == "opened" && m.Head == t.Head && m.Source == t.Branch && m.Target == t.TargetBranch
+	}
+	if !matches(mr) {
+		return problem(409, "MR_CHANGED", "GitLab MR 状态或代码已变化，请先同步后重新审查")
+	}
+	if mr.Draft == draft {
+		return nil
+	}
+	updated, err := a.GitLab.SetMergeRequestDraft(ctx, project, mr, draft)
+	if err != nil {
+		return problem(502, "GITLAB_DRAFT_UPDATE_FAILED", "GitLab 草稿状态更新失败，请稍后重试")
+	}
+	if !matches(updated) {
+		return problem(409, "MR_CHANGED", "GitLab MR 状态或代码已变化，请先同步后重新审查")
+	}
+	if updated.Draft != draft {
+		return problem(502, "GITLAB_DRAFT_UPDATE_FAILED", "GitLab 未确认草稿状态更新，请稍后重试")
+	}
+	return nil
 }

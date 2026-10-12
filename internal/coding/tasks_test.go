@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
 	"github.com/jackc/pgx/v5"
 	"net/http"
 	"net/http/httptest"
@@ -23,11 +24,21 @@ type fixture struct {
 	operator, member, other string
 }
 type taskFixture struct {
+	gitlabProjectID int64
 	*fixture
-	task          CodingTask
-	head, mrState string
-	level         atomic.Int32
-	lease         atomic.Bool
+	task            CodingTask
+	head, mrState   string
+	mrTitle         string
+	mrDraft         bool
+	mrUpdateStatus  int
+	mrUpdateIgnored bool
+	mrUpdateHead    string
+	mrHeadOverride  string
+	runtimeStatus   string
+	missingBranch   bool
+	mrWrites        atomic.Int32
+	level           atomic.Int32
+	lease           atomic.Bool
 }
 
 func setupTask(t *testing.T) *taskFixture {
@@ -49,7 +60,7 @@ func setupTask(t *testing.T) *taskFixture {
 	q := u.Query()
 	q.Set("search_path", name)
 	u.RawQuery = q.Encode()
-	a, e := New(ctx, config.Config{DatabaseURL: u.String(), ServiceToken: strings.Repeat("a", 32), RuntimeToken: strings.Repeat("b", 32), TenantToken: strings.Repeat("c", 32), ModelURL: "http://model", ToolProjects: map[string]string{"77": "http://tools"}})
+	a, e := New(ctx, config.Config{DatabaseURL: u.String(), ServiceToken: strings.Repeat("a", 32), RuntimeToken: strings.Repeat("b", 32), TenantToken: strings.Repeat("c", 32), ModelURL: "http://model", SandboxGatewayURL: "http://coding", EnabledProjects: map[string]bool{"77": true}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -61,11 +72,14 @@ func setupTask(t *testing.T) *taskFixture {
 	if e = a.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
-	f := &taskFixture{fixture: &fixture{a: a, ctx: ctx, operator: "operator", member: "member", other: "other"}, head: strings.Repeat("a", 40), mrState: "opened"}
+	f := &taskFixture{fixture: &fixture{a: a, ctx: ctx, operator: "operator", member: "member", other: "other"}, head: strings.Repeat("a", 40), mrState: "opened", gitlabProjectID: 77, mrTitle: "Draft: Fix traversal", mrDraft: true}
 	f.level.Store(40)
 	f.lease.Store(true)
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/bash/exec":
+			JSON(w, 200, Object{"success": true, "data": Object{"session_id": "test", "command_id": "check", "status": "completed", "exit_code": 0}})
+			return
 		case "/internal/v1/session/check":
 			var b struct{ Session string }
 			_ = json.NewDecoder(r.Body).Decode(&b)
@@ -88,13 +102,22 @@ func setupTask(t *testing.T) *taskFixture {
 			JSON(w, 200, Object{"level": n})
 			return
 		case "/internal/v1/projects/resolve":
-			JSON(w, 200, Project{ID: "p", TenantID: "t", GitLabID: 77, Path: "task-test/repo"})
+			JSON(w, 200, Project{ID: "p", TenantID: "t", GitLabID: f.gitlabProjectID, Path: "task-test/repo"})
+			return
+		case "/v1/agents/coding-agent/versions/1":
+			JSON(w, 200, PublishedAgent{AgentID: "coding-agent", Number: 1, Config: PublishedAgentConfig{Model: struct {
+				Name string `json:"name"`
+			}{Name: "local-model"}, Toolsets: []string{"filesystem"}, Tools: []AgentTool{{Name: "run_checks", URL: "http://coding/internal/v1/tools/run_checks"}, {Name: "finish", EndRun: true, URL: "http://coding/internal/v1/tools/finish"}}}})
 			return
 		case "/internal/v1/executions":
 			JSON(w, 202, RuntimeRun{ID: "executor", Status: "Queued"})
 			return
 		case "/v1/runs/executor":
-			JSON(w, 200, RuntimeRun{ID: "executor", Status: "Running"})
+			state := f.runtimeStatus
+			if state == "" {
+				state = "Running"
+			}
+			JSON(w, 200, RuntimeRun{ID: "executor", Status: state, Error: "tool outcome needs review"})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/lease") {
@@ -102,6 +125,10 @@ func setupTask(t *testing.T) *taskFixture {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/repository/branches/") {
+			if f.missingBranch {
+				JSON(w, 404, Object{"message": "not found"})
+				return
+			}
 			JSON(w, 200, Object{"name": "master", "commit": Object{"id": f.head}})
 			return
 		}
@@ -109,13 +136,36 @@ func setupTask(t *testing.T) *taskFixture {
 			JSON(w, 200, []any{})
 			return
 		}
-		JSON(w, 200, Object{"iid": 1, "state": f.mrState, "sha": f.head, "source_branch": "fix", "target_branch": "master"})
+		if r.Method == "PUT" {
+			f.mrWrites.Add(1)
+			if f.mrUpdateStatus != 0 {
+				JSON(w, f.mrUpdateStatus, Object{"message": "update failed"})
+				return
+			}
+			var b struct {
+				Title string `json:"title"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			if !f.mrUpdateIgnored {
+				f.mrTitle = b.Title
+				f.mrDraft = strings.HasPrefix(b.Title, "Draft:")
+			}
+			if f.mrUpdateHead != "" {
+				f.head = f.mrUpdateHead
+			}
+		}
+		mrHead := f.head
+		if f.mrHeadOverride != "" {
+			mrHead = f.mrHeadOverride
+		}
+		JSON(w, 200, Object{"iid": 1, "title": f.mrTitle, "draft": f.mrDraft, "state": f.mrState, "sha": mrHead, "source_branch": "fix", "target_branch": "master"})
 	}))
 	t.Cleanup(remote.Close)
 	a.Config.TenantURL = remote.URL
 	a.Config.RuntimeURL = remote.URL
 	a.GitLab.URL = remote.URL
-	raw, _ := json.Marshal(CodingSettings{Version: 1, BaseBranch: "master", Model: "local-model", AllowedPaths: []string{"src/"}, Checks: []string{"go test ./..."}, RepairLimit: 3, TimeoutMinutes: 30})
+	a.Workspaces = &testWorkspace{endpoint: workspace.Endpoint{URL: remote.URL, Token: "test"}}
+	raw, _ := json.Marshal(CodingSettings{Version: 1, BaseBranch: "master", AgentID: "coding-agent", AgentVersion: 1, Model: "local-model", AllowedPaths: []string{"src/"}, Checks: []string{"go test ./..."}, RepairLimit: 3, TimeoutMinutes: 30})
 	if _, e = a.DB.Exec(ctx, `INSERT INTO coding_project_settings(tenant_id,project_id,version,settings,checked_at) VALUES('t','p',1,$1,now())`, raw); e != nil {
 		t.Fatal(e)
 	}
@@ -164,32 +214,55 @@ func (f *taskFixture) refresh(t *testing.T) {
 	raw, _ := json.Marshal(out["task"])
 	_ = json.Unmarshal(raw, &f.task)
 }
+
+// These tests exercise platform delivery and lease gates directly. They do not
+// expose the retired Python callback endpoints in the production router.
 func (f *taskFixture) internal(t *testing.T, path string, b Object) (int, Object) {
+	t.Helper()
 	b["runtimeEpoch"] = 1
 	raw, _ := json.Marshal(b)
-	r := httptest.NewRequest("POST", path, bytes.NewReader(raw))
-	r.Header.Set("Authorization", "Bearer "+f.a.Config.ServiceToken)
+	var req taskRunRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatal(err)
+	}
+	var result any
+	var err error
+	if strings.HasSuffix(path, "/gate") {
+		result, err = f.a.checkGate(f.ctx, f.task.ID, req)
+	} else {
+		result, err = f.a.recordDelivery(f.ctx, f.task.ID, req)
+	}
 	w := httptest.NewRecorder()
-	f.a.Handler().ServeHTTP(w, r)
+	if err != nil {
+		fail(w, err)
+	} else {
+		JSON(w, 200, result)
+	}
 	out := Object{}
-	if e := json.Unmarshal(w.Body.Bytes(), &out); e != nil {
-		t.Fatal(w.Code, w.Body.String())
+	if err = json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
 	}
 	return w.Code, out
 }
 func (f *taskFixture) dispatch(t *testing.T) Object {
 	t.Helper()
 	for range 2 {
-		if e := f.a.reconcileRuns(f.ctx); e != nil {
-			t.Fatal(e)
+		if err := f.a.reconcileRuns(f.ctx); err != nil {
+			t.Fatal(err)
 		}
 	}
 	f.refresh(t)
-	code, out := f.internal(t, "/internal/v1/rounds/"+*f.task.ActiveRun+"/start", Object{"worker": "executor"})
-	if code != 200 {
-		t.Fatal(code, out)
+	var epoch int64
+	if err := f.a.DB.QueryRow(f.ctx, `SELECT epoch FROM coding_runs WHERE id=$1 AND runtime_id='executor'`, *f.task.ActiveRun).Scan(&epoch); err != nil {
+		t.Fatal(err)
 	}
-	return Object{"id": out["id"], "epoch": out["epoch"]}
+	return Object{"id": *f.task.ActiveRun, "epoch": epoch}
+}
+func (f *taskFixture) delivering(t *testing.T, round any) {
+	t.Helper()
+	if _, err := f.a.DB.Exec(f.ctx, `UPDATE coding_runs SET status='Delivering',output=output || '{"finishRequest":{"summary":"verified"}}'::jsonb WHERE id=$1`, round); err != nil {
+		t.Fatal(err)
+	}
 }
 func TestRuntimeDispatchRevokeAndLateDelivery(t *testing.T) {
 	f := setupTask(t)
@@ -381,7 +454,7 @@ func TestQueuedTaskInterventionNeedsNoWorkerStop(t *testing.T) {
 }
 func TestProjectConfigChangesRequireFreshCheck(t *testing.T) {
 	f := setupTask(t)
-	body := Object{"version": 1, "baseBranch": "master", "model": "local-model", "allowedPaths": []string{"src/"}, "checks": []string{"go test ./..."}, "repairLimit": 3, "timeoutMinutes": 30}
+	body := Object{"agentID": "coding-agent", "agentVersion": 1, "version": 1, "baseBranch": "master", "model": "local-model", "allowedPaths": []string{"src/"}, "checks": []string{"go test ./..."}, "repairLimit": 3, "timeoutMinutes": 30}
 	code, out := f.call(t, f.operator, "PUT", "/api/v1/tenants/t/projects/p/coding-settings", body, 0, "")
 	if code != 200 || out["version"] != float64(2) || out["checkedAt"] != nil {
 		t.Fatal(code, out)
@@ -393,3 +466,236 @@ func TestProjectConfigChangesRequireFreshCheck(t *testing.T) {
 		t.Fatal(code, out)
 	}
 }
+
+func TestTaskGitLabLinkUsesPublishedResource(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		mr                   int
+		branchStatus         int
+		wantTarget, wantPath string
+		wantStatus           int
+	}{
+		{"unpublished branch", 0, 404, "project", "/task-test/repo", 200},
+		{"published branch", 0, 200, "branch", "/task-test/repo/-/tree/agent%2Fexample", 200},
+		{"existing MR", 1, 500, "mergeRequest", "/task-test/repo/-/merge_requests/1", 200},
+		{"lookup failure is not absence", 0, 500, "", "", 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupTask(t)
+			f.a.Config.GitLabPublicURL = "https://gitlab.example.test"
+			_, err := f.a.DB.Exec(f.ctx, `UPDATE coding_tasks SET mr_iid=$1,branch='agent/example' WHERE id=$2`, tc.mr, f.task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.EscapedPath() != "/api/v4/projects/77/repository/branches/agent%2Fexample" {
+					t.Errorf("unexpected branch query %s", r.URL.EscapedPath())
+				}
+				JSON(w, tc.branchStatus, Object{"name": "agent/example", "commit": Object{"id": f.head}})
+			}))
+			defer server.Close()
+			f.a.GitLab.URL = server.URL
+			status, out := f.call(t, f.operator, "GET", "/api/v1/tenants/t/projects/p/tasks/"+f.task.ID, nil, 0, "")
+			if status != tc.wantStatus {
+				t.Fatalf("status %d, want %d", status, tc.wantStatus)
+			}
+			if tc.wantStatus == 200 && (out["gitlabTarget"] != tc.wantTarget || out["gitlabUrl"] != "https://gitlab.example.test"+tc.wantPath) {
+				t.Fatalf("wrong link: target=%v url=%v", out["gitlabTarget"], out["gitlabUrl"])
+			}
+			if tc.mr > 0 && calls != 0 {
+				t.Fatal("existing MR should not depend on source branch lookup")
+			}
+		})
+	}
+}
+
+func TestTaskApprovalMarksMRReady(t *testing.T) {
+	f := setupTask(t)
+	code, out := f.act(t, "Approve", nil)
+	if code != 200 || f.task.ApprovalHead != f.task.Head {
+		t.Fatal(code, out)
+	}
+	if f.mrDraft || f.mrTitle != "Fix traversal" || f.mrWrites.Load() != 1 {
+		t.Fatalf("approved MR is still draft: %s (writes=%d)", f.mrTitle, f.mrWrites.Load())
+	}
+	code, out = f.act(t, "Approve", nil)
+	if code != 200 || f.mrWrites.Load() != 1 {
+		t.Fatal("ready retry must not update MR", code, out)
+	}
+	code, out = f.act(t, "Resume", nil)
+	if code != 200 || !f.mrDraft || f.task.ApprovalHead != "" || f.task.ActiveRun == nil {
+		t.Fatal("next round must restore draft", code, out, f.mrDraft)
+	}
+}
+
+func TestTaskApprovalRejectsUnsafeMR(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(*testing.T, *taskFixture)
+		code   int
+		writes int32
+	}{
+		{"remote_commit_changed", func(t *testing.T, f *taskFixture) { f.head = strings.Repeat("b", 40) }, 409, 0},
+		{"closed", func(t *testing.T, f *taskFixture) { f.mrState = "closed" }, 409, 0},
+		{"no_mr", func(t *testing.T, f *taskFixture) {
+			_, e := f.a.DB.Exec(f.ctx, `UPDATE coding_tasks SET mr_iid=0 WHERE id=$1`, f.task.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+		}, 409, 0},
+		{"not_stopped", func(t *testing.T, f *taskFixture) {
+			_, e := f.a.DB.Exec(f.ctx, `UPDATE coding_tasks SET stop_confirmed=false WHERE id=$1`, f.task.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+		}, 409, 0},
+		{"running", func(t *testing.T, f *taskFixture) {
+			code, out := f.act(t, "Resume", nil)
+			if code != 200 {
+				t.Fatal(code, out)
+			}
+		}, 409, 0},
+		{"not_reviewer", func(t *testing.T, f *taskFixture) {
+			_, e := f.a.DB.Exec(f.ctx, `UPDATE coding_tasks SET reviewer_ids='{}' WHERE id=$1`, f.task.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+		}, 403, 0},
+		{"gitlab_failure", func(t *testing.T, f *taskFixture) { f.mrUpdateStatus = 503 }, 502, 1},
+		{"still_draft", func(t *testing.T, f *taskFixture) { f.mrUpdateIgnored = true }, 502, 1},
+		{"changed_during_update", func(t *testing.T, f *taskFixture) { f.mrUpdateHead = strings.Repeat("b", 40) }, 409, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupTask(t)
+			tc.setup(t, f)
+			code, out := f.act(t, "Approve", nil)
+			if code != tc.code || f.mrWrites.Load() != tc.writes {
+				t.Fatal(code, out, "writes", f.mrWrites.Load())
+			}
+			var approved string
+			if e := f.a.DB.QueryRow(f.ctx, `SELECT approval_head FROM coding_tasks WHERE id=$1`, f.task.ID).Scan(&approved); e != nil {
+				t.Fatal(e)
+			}
+			if approved != "" {
+				t.Fatal("failed remote transition saved local approval")
+			}
+		})
+	}
+}
+
+func TestTaskResumeRequiresDraftTransition(t *testing.T) {
+	f := setupTask(t)
+	f.mrDraft = false
+	f.mrTitle = "Fix traversal"
+	f.mrUpdateStatus = 503
+	code, out := f.act(t, "Resume", nil)
+	if code != 502 {
+		t.Fatal(code, out)
+	}
+	var runs int
+	if e := f.a.DB.QueryRow(f.ctx, `SELECT count(*) FROM coding_runs WHERE task_id=$1`, f.task.ID).Scan(&runs); e != nil {
+		t.Fatal(e)
+	}
+	if runs != 0 {
+		t.Fatal("queued execution despite failed draft transition")
+	}
+}
+
+func TestRuntimeNeedsReviewStopsAndPreservesReason(t *testing.T) {
+	f := setupTask(t)
+	if code, out := f.act(t, "Resume", nil); code != 200 {
+		t.Fatal(code, out)
+	}
+	f.dispatch(t)
+	f.runtimeStatus = "NeedsReview"
+	if err := f.a.reconcileRuns(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.refresh(t)
+	if f.task.ActiveRun != nil || !f.task.StopConfirmed || f.task.Status != "Failed" {
+		t.Fatal(f.task)
+	}
+	if f.a.Workspaces.(*testWorkspace).stops == 0 {
+		t.Fatal("compute was not stopped")
+	}
+}
+
+func TestCompletedRuntimeCanStillBeStoppedDuringDelivery(t *testing.T) {
+	f := setupTask(t)
+	if code, out := f.act(t, "Resume", nil); code != 200 {
+		t.Fatal(code, out)
+	}
+	run := f.dispatch(t)
+	f.delivering(t, run["id"])
+	f.runtimeStatus = "Completed"
+	if code, out := f.act(t, "Intervene", nil); code != 200 {
+		t.Fatal(code, out)
+	}
+	if err := f.a.reconcileRuns(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.refresh(t)
+	if f.task.ActiveRun != nil || !f.task.StopConfirmed || f.task.Control != "Human" {
+		t.Fatal(f.task)
+	}
+	if f.a.Workspaces.(*testWorkspace).stops == 0 {
+		t.Fatal("delivery compute was not stopped")
+	}
+}
+
+func TestCompletedRuntimeWithoutFinishFailsAndStops(t *testing.T) {
+	f := setupTask(t)
+	if code, out := f.act(t, "Resume", nil); code != 200 {
+		t.Fatal(code, out)
+	}
+	f.dispatch(t)
+	f.runtimeStatus = "Completed"
+	if err := f.a.reconcileRuns(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.refresh(t)
+	if f.task.ActiveRun != nil || f.task.Status != "Failed" || !f.task.StopConfirmed {
+		t.Fatal(f.task)
+	}
+}
+
+type testWorkspace struct {
+	endpoint                   workspace.Endpoint
+	stops                      int
+	stopped                    []string
+	pauses, resumes, published int
+	jobResults                 map[string][]byte
+	jobError                   error
+}
+
+func (w *testWorkspace) Ensure(context.Context, string, string, workspace.Repository) (workspace.Endpoint, error) {
+	return w.endpoint, nil
+}
+func (w *testWorkspace) Access(context.Context, string) (workspace.Endpoint, error) {
+	return w.endpoint, nil
+}
+func (w *testWorkspace) Fence(context.Context, string, string, int64) error { return nil }
+func (w *testWorkspace) Stop(_ context.Context, id string) error {
+	w.stops++
+	w.stopped = append(w.stopped, id)
+	return nil
+}
+func (w *testWorkspace) StopAll(context.Context, string, string) error { w.stops++; return nil }
+func (w *testWorkspace) RunJob(_ context.Context, _, _ string, phase string, _ map[string]string) ([]byte, error) {
+	if w.jobError != nil {
+		return nil, w.jobError
+	}
+	if result, ok := w.jobResults[phase]; ok {
+		return result, nil
+	}
+	return nil, workspace.ErrPreparing
+}
+func (w *testWorkspace) Verifier(context.Context, string, string) (workspace.Endpoint, error) {
+	return w.endpoint, nil
+}
+
+func (w *testWorkspace) Pause(context.Context, string, string) error     { w.pauses++; return nil }
+func (w *testWorkspace) Resume(context.Context, string, string) error    { w.resumes++; return nil }
+func (w *testWorkspace) Published(context.Context, string, string) error { w.published++; return nil }

@@ -1,0 +1,74 @@
+{
+  "name": "Coding Agent",
+  "config": {
+    "systemPrompt": "You are a coding agent working in an exclusive AIO sandbox. The platform already cloned the task revision into /workspace/repo. The user input includes requirements, review feedback, allowed delivery paths, project checks and repair limit. Read AGENTS.md and any nested rules before editing. Explore the source and relevant tests using the filesystem tools and execute. Fix the underlying cause, preserve valid tests, and make focused changes. Do not access files outside the workspace or attempt GitLab pushes. The platform owns commits and MR publication. Run project checks with run_checks. Use execute to inspect git diff and git status before finishing. Native edit_file replaces exact text; copy a small unique block from a fresh read. If matching fails, inspect the actual file and change approach rather than repeating guessed whitespace. Use execute with a precise script or write_file for a deliberate full-file rewrite when appropriate. Do not infer a syntax problem from JSON display indentation. After sufficient evidence, call finish alone with an honest summary and acceptance judgment. Checks passing and acceptance being met are separate judgments. Stop repairing after the configured repair limit and report remaining failures. Never merge an MR.",
+    "model": {
+      "name": "qwen3.8:27b-mlx",
+      "baseURL": "http://host.docker.internal:11434/v1",
+      "apiKeyEnv": ""
+    },
+    "maxTurns": 40,
+    "tools": [
+      {
+        "name": "run_checks",
+        "description": "Run the frozen project checks in the current sandbox. Inspect the actual exit codes and output. Correct failures within the repair limit.",
+        "kind": "HTTP",
+        "url": "http://forge-coding/internal/v1/tools/run_checks",
+        "tokenEnv": "CODING_TOOLS_TOKEN",
+        "policy": "Unsafe",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "finish",
+        "description": "Submit the result and end this run. Call alone after reviewing the diff and check results. The platform validates the candidate and publishes the task Draft MR. Never claim acceptance without evidence.",
+        "kind": "HTTP",
+        "url": "http://forge-coding/internal/v1/tools/finish",
+        "tokenEnv": "CODING_TOOLS_TOKEN",
+        "policy": "Idempotent",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "summary": {
+              "type": "string"
+            },
+            "judgment": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "Met",
+                    "Unmet",
+                    "NeedsHuman"
+                  ]
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "summary"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "summary",
+            "judgment"
+          ],
+          "additionalProperties": false
+        },
+        "endRun": true
+      }
+    ],
+    "toolsets": [
+      "filesystem"
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 
 企业 Coding Agent 的业务后端，使用 Go / Gin。前端复用 [forge-tenant-web](https://github.com/FlyTOmeLight/forge-tenant-web)。租户、团队和项目权限由 [forge-tenant-api](https://github.com/FlyTOmeLight/forge-tenant-api) 管理。模型调用和持久化执行由 [agentic-kit-api](https://github.com/FlyTOmeLight/agentic-kit-api) 与 [agentic-kit-worker](https://github.com/FlyTOmeLight/agentic-kit-worker) 承担。
 
-研发任务包含负责人、指定审查者、验收条件、分支、MR、人工介入和多轮执行。每轮保存配置快照并关联一个 Agentic `runtime_id`。执行完成不会直接完成研发任务；开放任务在同步到 MR 合入事实时完成。
+研发任务包含负责人、指定审查者、验收条件、分支、MR、人工介入和多轮执行。每轮保存项目配置与 Agent 发布版本，并关联一个 Agentic `runtime_id`；同一任务跨轮复用同一个 Agent 会话。执行完成不会直接完成研发任务；开放任务在同步到 MR 合入事实时完成。
 
 ## 目录
 
@@ -11,12 +11,12 @@
 - `internal/coding/`：任务业务、HTTP 接口、租户授权、执行提交和结果验证。
 - `internal/remote/`：GitLab 仓库与 MR 协议。
 - `internal/config/`、`configs/`：配置加载与配置样例。
-- `tools/`：项目专用的仓库读取、编辑、检查和交付工具。这里不调用模型，也不领取执行队列。
-- `charts/`：API/dispatcher、数据库和项目工具环境的 Helm Chart。
+- `internal/workspace/`：任务级 AIO Pod/PVC、仓库准备、候选快照与受控 GitLab 推送。
+- `charts/`：API/dispatcher、数据库和沙箱资源权限的 Helm Chart。
 
 ## 运行与部署
 
-配置项见 [configs/env.example](configs/env.example)。凭据由 Kubernetes Secret 注入，不提交到仓库。`TOOLS_PROJECTS_JSON` 将 GitLab 数字项目 ID 映射到该项目的工具 Service；每个工具部署同时配置对应的 `GITLAB_PROJECT_ID` 和项目访问令牌。未配置工具环境的项目不能新建自动执行任务。
+配置项见 [configs/env.example](configs/env.example)。凭据由 Kubernetes Secret 注入，不提交到仓库。`CODING_PROJECTS_JSON` 显式启用 GitLab 项目 ID。`WORKSPACE_NAMESPACE` 指定 AIO 资源命名空间，`SANDBOX_GATEWAY_URL` 是 Worker 访问的 Coding API 地址，`WORKSPACE_JOB_IMAGE` 使用当前 Coding 镜像。Helm 自动注入后三项并配置 ServiceAccount/Role。
 
 ```sh
 go build -o bin/coding ./cmd/coding
@@ -26,25 +26,50 @@ go build -o bin/coding ./cmd/coding
 ./bin/coding dispatcher
 
 docker build -t forge-coding-api:dev .
-docker build -f tools/Dockerfile -t forge-coding-tools:dev .
 helm upgrade --install forge-coding charts/forge-coding -n forge-tenant-split \
   --set image.repository=forge-coding-api,existingSecret=forge-coding-env,database.existingSecret=forge-coding-db
-helm upgrade --install forge-coding-tools charts/forge-coding-tools -n forge-tenant-split \
-  --set existingSecret=forge-coding-tools-env
 ```
 
-先部署 Agentic API/Worker 各自仓库中的 Helm Chart。API 的 `API_TOKENS_JSON` 与 `CONFIG_OWNERS` 配置 Coding 服务身份；Worker 的 `CODING_TOOLS_TOKEN` 对应工具部署的 `TOOLS_TOKEN`。Coding 通过 HTTP 访问租户与运行时，不共享它们的数据库。Agentic API 与 Worker 继续共享运行时数据库。
+先部署 Agentic API/Worker 各自仓库中的 Helm Chart。API 的 `API_TOKENS_JSON` 与 `CONFIG_OWNERS` 配置 Coding 服务身份；Worker 的 `CODING_TOOLS_TOKEN` 对应 Coding API 的 `SERVICE_TOKEN`。Coding 通过 HTTP 访问租户与运行时，不共享它们的数据库。Agentic API 与 Worker 继续共享运行时数据库。
 
-当前工具环境用于明确授权的可信项目。每个项目独立部署，每轮使用独立目录；这不是运行不可信仓库代码的安全沙箱。项目检查命令最多执行 60 秒，初始读取范围限 12 个文件 / 96 KiB。工具执行副作用按 `Unsafe` 处理；结果不确定时不会自动重复推送。GitLab 已收到的在途操作不能承诺撤回。
+每个任务创建独立 AIO Pod 和持久卷。反馈轮复用同一个 Pod、代码目录、Python 环境和后台进程。仓库按冻结版本准备后，Eino 原生文件工具和 Shell 通过官方 AIO Go SDK 操作沙箱。模型调用 `finish` 后，平台短暂暂停沙箱进程，将候选复制到本轮独立持久卷后恢复进程，启动无 GitLab 凭据的验收环境，再校验范围、文件内容和分支版本，推送并创建或更新 Draft MR。发布期间再次暂停进程，更新沙箱内受控 Git 元数据，使下一轮 HEAD 对齐已发布提交。GitLab 凭据只供固定的准备与发布程序使用。`allowedPaths` 是允许交付的路径，Shell 的临时文件不受其限制。
+
+工具写入和命令执行按 Unsafe 处理；结果不明时进入人工检查。Worker 接管前停止旧沙箱计算实例，PVC 保留代码。取消、人工介入和故障停止需要确认相关 Pod 已停止。正常交付保留任务沙箱；任务结束或无活动轮次且闲置 30 分钟后停止计算。工作卷保留，下一轮可重新创建 Pod。人工移动分支时刷新仓库，工作目录外的依赖缓存继续保留。已完成轮次的 PVC 保留用于检查，当前需由管理员按保留策略清理。
+
+新增依赖为官方 AIO Go SDK（对接实际文件和命令协议）与 Kubernetes client-go（资源创建、原生 exec 暂停/恢复、状态与停止确认）。不再部署自定义 Python 工具服务。
 
 ## 验证
 
 ```sh
 TEST_DATABASE_URL=postgres://... go test -race -count=1 ./...
 go vet ./...
-python3 -m unittest discover -s tools -p 'test_*.py'
 helm lint charts/forge-coding --set existingSecret=test,database.existingSecret=test
-helm lint charts/forge-coding-tools --set existingSecret=test
 ```
 
 缺少 `TEST_DATABASE_URL` 时数据库用例会跳过，不代表集成验证通过。真实模型试点、迁移与控制验证见 [docs/verification.md](docs/verification.md)。业务契约见 [docs/coding-tasks.md](docs/coding-tasks.md)，迁移步骤见 [docs/migration.md](docs/migration.md)。
+
+## 配置 Coding Agent
+
+`agents/coding.json` 维护 Agent 提示词、模型和工具定义。先调整模型地址与Coding API 地址，再使用 Agentic API 仓库的 `scripts/publish-agent.py` 发布。随后在项目执行配置中选择 Agent ID 与发布版本并复检。业务后端只提交版本引用和任务输入；Worker 统一执行 Writing、Coding 等 Agent。
+
+首次切换需要显式绑定发布版本，不能直接沿用只有模型名称的旧配置。切换步骤与当前迁移边界见 [执行契约](docs/coding-tasks.md)。
+
+### 执行过程
+
+`GET /api/v1/tenants/:tid/projects/:pid/tasks/:task/runs/:run/trace?after=0` 只读返回运行时公共事件页。先验证项目读权限及轮次归属，再校验运行时 scope；浏览器不持有运行时凭据。未分配运行时 ID 时返回 `run:null` 与空事件。按 `nextSeq` 翻页，`hasMore:false` 后轮询；错误明确返回，刷新不恢复任务。工具参数与结果是有截断标记的预览，来源为公共消息和持久化事件，不读取执行器私有 checkpoint。
+
+## GitLab 服务令牌自动更新
+
+`gitlabCredentials.enabled=true` 启用 Kubernetes CronJob。默认每天北京时间 02:15 检查，在到期前 14 天通过 GitLab 管理员 API 创建同账号、同 scope 的 90 天 PAT。源令牌需要实例管理员的 `api` scope。配置 `gitlabCredentials.url`、`otherNamespaces` 和 `otherTargets`，覆盖共享这枚令牌的服务。配置文件不填写令牌明文。
+
+任务只替换受管命名空间内与旧值相同的 `GITLAB_TOKEN` / `git-token`。应用通过 Secret 目录挂载与 `GITLAB_TOKEN_FILE` 按请求读取，无需重启 Pod。每个 `otherTargets` 项包含 `namespace`、`deployment` 和 `container`。目标应用需支持 `/forge gitlab-credential-status`，该命令只输出令牌元数据。
+
+新旧令牌默认重叠至少 24 小时。所有目标 Pod 确认加载新令牌，且仓库准备、快照和发布进程结束后，才撤销旧令牌。未完成的切换保存在专用 Secret 中，失败 Job 可恢复。原生 Lease 将定时与手动 Job 串行执行。日志不输出令牌。
+
+```sh
+kubectl -n forge-tenant-split get cronjob forge-coding-gitlab-credentials
+kubectl -n forge-tenant-split create job --from=cronjob/forge-coding-gitlab-credentials gitlab-credentials-check
+kubectl -n forge-tenant-split logs job/gitlab-credentials-check
+```
+
+定时任务需在原令牌仍有效时运行。集群长时间停机导致令牌已过期时，需要重新提供有效的源令牌。官方 API：[创建 PAT](https://docs.gitlab.com/api/user_tokens/)、[查询和撤销 PAT](https://docs.gitlab.com/api/personal_access_tokens/)。

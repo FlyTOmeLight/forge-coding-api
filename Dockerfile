@@ -5,7 +5,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -tags=nomsgpack -trimpath -ldflags='-s -w' -o /forge ./cmd/coding
-FROM scratch
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /forge /forge
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 USER 65532:65532

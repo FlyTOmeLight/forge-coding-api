@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/remote"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
@@ -17,11 +18,25 @@ import (
 //go:embed schema.sql
 var schema string
 
+type Workspace interface {
+	Ensure(context.Context, string, string, workspace.Repository) (workspace.Endpoint, error)
+	Access(context.Context, string) (workspace.Endpoint, error)
+	Fence(context.Context, string, string, int64) error
+	Pause(context.Context, string, string) error
+	Resume(context.Context, string, string) error
+	Published(context.Context, string, string) error
+	Stop(context.Context, string) error
+	StopAll(context.Context, string, string) error
+	RunJob(context.Context, string, string, string, map[string]string) ([]byte, error)
+	Verifier(context.Context, string, string) (workspace.Endpoint, error)
+}
+
 type App struct {
-	DB     *pgxpool.Pool
-	Config config.Config
-	HTTP   *http.Client
-	GitLab *remote.GitLab
+	Workspaces Workspace
+	DB         *pgxpool.Pool
+	Config     config.Config
+	HTTP       *http.Client
+	GitLab     *remote.GitLab
 }
 
 func New(ctx context.Context, c config.Config) (*App, error) {
@@ -32,7 +47,15 @@ func New(ctx context.Context, c config.Config) (*App, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	h := &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &App{DB: db, Config: c, HTTP: h, GitLab: &remote.GitLab{URL: c.GitLabURL, Token: c.GitLabToken, HTTP: h}}, nil
+	app := &App{DB: db, Config: c, HTTP: h, GitLab: &remote.GitLab{URL: c.GitLabURL, Token: c.GitLabToken, TokenFile: c.GitLabTokenFile, HTTP: h}}
+	if c.WorkspaceNamespace != "" {
+		app.Workspaces, e = workspace.New(c.WorkspaceNamespace, c.WorkspaceJobImage)
+		if e != nil {
+			db.Close()
+			return nil, e
+		}
+	}
+	return app, nil
 }
 func (a *App) Migrate(ctx context.Context) error {
 	tx, e := a.DB.Begin(ctx)
@@ -67,7 +90,6 @@ func (a *App) Handler() http.Handler {
 		}
 		JSON(w, 200, Object{"status": "ok", "service": "forge-coding-api"})
 	})
-	route(m, "POST", "/internal/v1/rounds/:run/start", a.service(a.startRound))
 	return m
 }
 func validName(s string) bool { return strings.TrimSpace(s) != "" && len(s) <= 200 }

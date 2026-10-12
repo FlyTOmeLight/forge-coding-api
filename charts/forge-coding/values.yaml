@@ -8,3 +8,13 @@ database:
   image: postgres:17.6-alpine
   existingSecret: ""
   storage: 2Gi
+gitlabCredentials:
+  enabled: false
+  schedule: "15 2 * * *"
+  timeZone: Asia/Shanghai
+  beforeDays: 14
+  lifetimeDays: 90
+  graceSeconds: 86400
+  url: ""
+  otherNamespaces: []
+  otherTargets: []

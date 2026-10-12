@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FlyTOmeLight/forge-coding-api/internal/remote"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
@@ -58,6 +59,11 @@ func scanTask(row pgx.Row) (CodingTask, error) {
 	return t, e
 }
 func (a *App) taskRoutes(m *gin.Engine) {
+	route(m, "POST", "/internal/v1/rounds/:run/publication-permit", a.service(a.publicationPermit))
+	route(m, "GET", "/internal/v1/rounds/:run/sandbox/*path", a.service(a.sandboxProxy))
+	route(m, "POST", "/internal/v1/rounds/:run/sandbox/*path", a.service(a.sandboxProxy))
+	route(m, "POST", "/internal/v1/tools/finish", a.service(a.submitFinish))
+	route(m, "POST", "/internal/v1/tools/run_checks", a.service(a.sandboxChecks))
 	route(m, "GET", "/api/v1/tenants/:tid/projects/:pid/tasks", a.authorized(a.listTasks))
 	route(m, "POST", "/api/v1/tenants/:tid/projects/:pid/tasks", a.authorized(a.createTask))
 	route(m, "POST", "/api/v1/tenants/:tid/projects/:pid/tasks/new", a.authorized(a.createProblemTask))
@@ -66,10 +72,10 @@ func (a *App) taskRoutes(m *gin.Engine) {
 	route(m, "POST", "/api/v1/tenants/:tid/projects/:pid/coding-settings/check", a.authorized(a.checkCodingSettings))
 	route(m, "GET", "/api/v1/platform/connections", a.authorized(a.codingConnections))
 	route(m, "GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task", a.authorized(a.getTask))
+	route(m, "GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/diff", a.authorized(a.getTaskDiff))
+	route(m, "GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/runs/:run/trace", a.authorized(a.getRunTrace))
 	route(m, "POST", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/actions", a.authorized(a.taskAction))
 	route(m, "POST", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/sync", a.authorized(a.syncTask))
-	route(m, "POST", "/internal/v1/tasks/:task/gate", a.service(a.taskGate))
-	route(m, "POST", "/internal/v1/tasks/:task/finish", a.service(a.finishTask))
 }
 func (a *App) taskLevel(ctx context.Context, uid, tid, pid string) (int, error) {
 	v, e := a.access(ctx, uid, tid, pid)
@@ -150,11 +156,24 @@ func (a *App) getTask(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, e)
 		return
 	}
-	gitlabURL := strings.TrimRight(a.Config.GitLabPublicURL, "/") + "/" + projectPath + "/-/tree/" + url.PathEscape(t.Branch)
+	gitlabURL := strings.TrimRight(a.Config.GitLabPublicURL, "/") + "/" + projectPath
+	gitlabTarget := "project"
 	if t.MRIID > 0 {
-		gitlabURL = strings.TrimRight(a.Config.GitLabPublicURL, "/") + "/" + projectPath + "/-/merge_requests/" + strconv.FormatInt(t.MRIID, 10)
+		gitlabURL += "/-/merge_requests/" + strconv.FormatInt(t.MRIID, 10)
+		gitlabTarget = "mergeRequest"
+	} else {
+		// A task reserves a branch name before the executor has pushed any code.
+		// Link to the branch only after GitLab confirms it exists.
+		_, err := a.GitLab.Branch(r.Context(), project.GitLabID, t.Branch)
+		if err == nil {
+			gitlabURL += "/-/tree/" + url.PathEscape(t.Branch)
+			gitlabTarget = "branch"
+		} else if !remote.IsStatus(err, http.StatusNotFound) {
+			fail(w, problem(502, "GITLAB_BRANCH_UNAVAILABLE", "无法确认 GitLab 工作分支，请稍后重试"))
+			return
+		}
 	}
-	JSON(w, 200, Object{"feedback": feedback, "gitlabUrl": gitlabURL, "task": t, "events": events, "runs": runs, "permissions": Object{"write": level >= 30, "manage": level >= 40 || (level >= 30 && t.OwnerID == u.ID), "review": level >= 20 && slices.Contains(t.ReviewerIDs, u.ID)}})
+	JSON(w, 200, Object{"feedback": feedback, "gitlabUrl": gitlabURL, "gitlabTarget": gitlabTarget, "task": t, "events": events, "runs": runs, "permissions": Object{"write": level >= 30, "manage": level >= 40 || (level >= 30 && t.OwnerID == u.ID), "review": level >= 20 && slices.Contains(t.ReviewerIDs, u.ID)}})
 }
 func (a *App) taskProject(ctx context.Context, tid, pid string) (int64, error) {
 	p, e := a.project(ctx, tid, pid)
@@ -298,6 +317,10 @@ func (a *App) taskAction(w http.ResponseWriter, r *http.Request, u User) {
 				return
 			}
 			if pending == "Queued" {
+				if e = a.Workspaces.StopAll(r.Context(), t.ID, *t.ActiveRun); e != nil {
+					fail(w, e)
+					return
+				}
 				if _, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status='Stopped',finished_at=now() WHERE id=$1`, *t.ActiveRun); e != nil {
 					fail(w, e)
 					return
@@ -306,12 +329,22 @@ func (a *App) taskAction(w http.ResponseWriter, r *http.Request, u User) {
 				t.StopConfirmed = true
 			}
 		}
+		if t.ActiveRun == nil && a.Workspaces != nil {
+			if e = a.Workspaces.Stop(r.Context(), t.ID); e != nil {
+				fail(w, e)
+				return
+			}
+			if _, e = tx.Exec(r.Context(), `UPDATE coding_tasks SET sandbox_active=false WHERE id=$1`, t.ID); e != nil {
+				fail(w, e)
+				return
+			}
+		}
 		t.Control = "Human"
 		if t.ActiveRun != nil {
 			t.Control = "Stopping"
 			now := time.Now().UTC()
 			t.StopRequestedAt = &now
-			_, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status='Stopping' WHERE id=$1 AND status IN ('Queued','Running')`, *t.ActiveRun)
+			_, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status='Stopping' WHERE id=$1 AND status IN ('Queued','Running','Delivering')`, *t.ActiveRun)
 		}
 		if b.Action == "Intervene" && t.ActiveRun == nil && t.Status == "Queued" {
 			t.Status = "Review"
@@ -347,7 +380,30 @@ func (a *App) taskAction(w http.ResponseWriter, r *http.Request, u User) {
 			fail(w, problem(409, "STALE_COMMIT", "审查认可的代码版本已失效"))
 			return
 		}
+		if t.ActiveRun != nil || !t.StopConfirmed {
+			fail(w, problem(409, "STOP_UNCONFIRMED", "请等待当前执行结束后再认可代码版本"))
+			return
+		}
+		if t.MRIID == 0 {
+			fail(w, problem(409, "MR_REQUIRED", "尚未生成 MR，不能认可交付版本"))
+			return
+		}
+		remoteID, err := a.taskProject(r.Context(), t.TenantID, t.ProjectID)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		mr, err := a.GitLab.MergeRequest(r.Context(), remoteID, t.MRIID)
+		if err != nil {
+			fail(w, problem(502, "GITLAB_MR_UNAVAILABLE", "无法确认 GitLab MR 状态，请稍后重试"))
+			return
+		}
+		if err = a.setTaskMRDraft(r.Context(), remoteID, t, mr, false); err != nil {
+			fail(w, err)
+			return
+		}
 		t.ApprovalHead = t.Head
+		detail["gitlabDraft"] = false
 	case "ReconfirmFeedback":
 		if !review {
 			fail(w, problem(403, "REVIEWER_REQUIRED", "仅指定审查者可核对新版本"))
@@ -428,13 +484,13 @@ func (a *App) taskAction(w http.ResponseWriter, r *http.Request, u User) {
 		}
 		configRaw, _ := json.Marshal(config)
 		requirements := strings.TrimSpace(b.Text)
-		if b.Action == "NextFeedback" {
-			if t.Control != "Agent" {
+		if b.Action == "NextFeedback" || (b.Action == "Resume" && b.FeedbackID != "") {
+			if b.Action == "NextFeedback" && t.Control != "Agent" {
 				fail(w, problem(409, "HUMAN_CONTROL", "请先由负责人显式恢复 Agent"))
 				return
 			}
 			var feedbackID, feedbackHead, feedbackState string
-			if e = tx.QueryRow(r.Context(), `SELECT id,head,status,requirements FROM coding_feedback WHERE task_id=$1 AND status IN ('Pending','NeedsReconfirmation') ORDER BY created_at LIMIT 1 FOR UPDATE`, t.ID).Scan(&feedbackID, &feedbackHead, &feedbackState, &requirements); e != nil {
+			if e = tx.QueryRow(r.Context(), `SELECT id,head,status,requirements FROM coding_feedback WHERE task_id=$1 AND status IN ('Pending','NeedsReconfirmation') AND ($2='' OR id=$2) ORDER BY created_at LIMIT 1 FOR UPDATE`, t.ID, b.FeedbackID).Scan(&feedbackID, &feedbackHead, &feedbackState, &requirements); e != nil {
 				fail(w, problem(409, "NO_FEEDBACK", "没有待处理要求"))
 				return
 			}
@@ -451,6 +507,12 @@ func (a *App) taskAction(w http.ResponseWriter, r *http.Request, u User) {
 		if requirements == "" {
 			fail(w, problem(400, "REQUIREMENTS_REQUIRED", "请填写本轮已整合的修改要求"))
 			return
+		}
+		if t.MRIID > 0 {
+			if err = a.setTaskMRDraft(r.Context(), remoteID, t, mr, true); err != nil {
+				fail(w, err)
+				return
+			}
 		}
 		run := ID("run")
 		t.Epoch++
@@ -504,114 +566,11 @@ func (a *App) syncTask(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, problem(404, "NOT_FOUND", "任务不存在"))
 		return
 	}
-	remoteID, e := a.taskProject(r.Context(), t.TenantID, t.ProjectID)
+	t, e = a.syncTaskFacts(r.Context(), t, u.ID)
 	if e != nil {
 		fail(w, e)
 		return
 	}
-	mr, e := a.currentTaskMR(r.Context(), remoteID, t)
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	notes := []map[string]any{}
-	if t.MRIID > 0 {
-		notes, e = a.GitLab.MRDiscussions(r.Context(), remoteID, t.MRIID)
-		if e != nil {
-			fail(w, e)
-			return
-		}
-	}
-	snapshotVersion := t.Version
-	raw, e := json.Marshal(notes)
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	tx, e := a.DB.Begin(r.Context())
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	defer tx.Rollback(r.Context())
-	t, e = scanTask(tx.QueryRow(r.Context(), `SELECT `+taskColumns+` FROM coding_tasks WHERE id=$1 FOR UPDATE`, t.ID))
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	if t.Version != snapshotVersion {
-		fail(w, problem(409, "STALE_SYNC", "同步期间任务已变化，请重试同步"))
-		return
-	}
-	if mr.IID > 0 {
-		t.MRIID = mr.IID
-	}
-	changed := t.Head != mr.Head
-	t.Discussions = raw
-	expectedPush := false
-	if changed && t.ActiveRun != nil && t.Control == "Agent" {
-		if e = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM coding_runs WHERE id=$1 AND epoch=$2 AND status='Running' AND output->>'expectedHead'=$3)`, *t.ActiveRun, t.Epoch, mr.Head).Scan(&expectedPush); e != nil {
-			fail(w, e)
-			return
-		}
-	}
-	if changed {
-		t.Head = mr.Head
-		if _, e = tx.Exec(r.Context(), `UPDATE coding_feedback SET status='NeedsReconfirmation' WHERE task_id=$1 AND status='Pending' AND head<>$2`, t.ID, t.Head); e != nil {
-			fail(w, e)
-			return
-		}
-		t.AgentJudgment = json.RawMessage(`{"status":"Unknown"}`)
-		t.Checks = "NotRun"
-		t.CheckedHead = ""
-		t.ApprovalHead = ""
-		if !expectedPush {
-			t.Epoch++
-			t.Control = "Human"
-			if t.ActiveRun != nil {
-				t.Control = "Stopping"
-				t.StopConfirmed = false
-				now := time.Now().UTC()
-				t.StopRequestedAt = &now
-				_, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status='Stopping' WHERE id=$1`, *t.ActiveRun)
-			}
-		}
-	}
-	terminal := t.Status == "Canceled" || t.Status == "Undelivered" || t.Status == "Completed"
-	if mr.State == "merged" && !terminal {
-		t.Status = "Completed"
-		t.Control = "Human"
-		t.Epoch++
-	}
-	if mr.State == "closed" && !terminal {
-		t.Status = "Undelivered"
-		t.Control = "Human"
-		t.Epoch++
-	}
-	if (mr.State == "merged" || mr.State == "closed") && t.ActiveRun != nil {
-		t.StopConfirmed = false
-		t.Control = "Stopping"
-		now := time.Now().UTC()
-		t.StopRequestedAt = &now
-		_, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status='Stopping' WHERE id=$1`, *t.ActiveRun)
-	}
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	if e = writeTask(r.Context(), tx, t); e != nil {
-		fail(w, e)
-		return
-	}
-	if e = taskEvent(r.Context(), tx, t.ID, u.ID, "GitLabSync", Object{"head": mr.Head, "mrState": mr.State, "codeChanged": changed}); e != nil {
-		fail(w, e)
-		return
-	}
-	if e = tx.Commit(r.Context()); e != nil {
-		fail(w, e)
-		return
-	}
-	t.Version++
 	JSON(w, 200, t)
 }
 
@@ -629,42 +588,32 @@ type taskRunRequest struct {
 }
 
 // finishTask accepts a stopped acknowledgement for the old epoch, but rejects late delivery.
-func (a *App) finishTask(w http.ResponseWriter, r *http.Request) {
-	var b taskRunRequest
-	if e := readJSONLimit(w, r, &b, 4<<20); e != nil {
-		fail(w, e)
-		return
-	}
+func (a *App) recordDelivery(ctx context.Context, taskID string, b taskRunRequest) (CodingTask, error) {
 	if b.Status != "Stopped" && b.Status != "Passed" && b.Status != "Failed" {
-		fail(w, problem(400, "INVALID_RESULT", "执行结果无效"))
-		return
+		return CodingTask{}, problem(400, "INVALID_RESULT", "执行结果无效")
 	}
-	tx, e := a.DB.Begin(r.Context())
+	tx, e := a.DB.Begin(ctx)
 	if e != nil {
-		fail(w, e)
-		return
+		return CodingTask{}, e
 	}
-	defer tx.Rollback(r.Context())
-	t, e := scanTask(tx.QueryRow(r.Context(), `SELECT `+taskColumns+` FROM coding_tasks WHERE id=$1 FOR UPDATE`, r.PathValue("task")))
+	defer tx.Rollback(ctx)
+	t, e := scanTask(tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM coding_tasks WHERE id=$1 FOR UPDATE`, taskID))
 	if e != nil {
-		fail(w, problem(404, "NOT_FOUND", "任务不存在"))
-		return
+		return CodingTask{}, problem(404, "NOT_FOUND", "任务不存在")
 	}
 	var worker, status string
 	var epoch int64
-	e = tx.QueryRow(r.Context(), `SELECT claimed_by,status,epoch FROM coding_runs WHERE id=$1 AND task_id=$2 FOR UPDATE`, b.RunID, t.ID).Scan(&worker, &status, &epoch)
+	e = tx.QueryRow(ctx, `SELECT claimed_by,status,epoch FROM coding_runs WHERE id=$1 AND task_id=$2 FOR UPDATE`, b.RunID, t.ID).Scan(&worker, &status, &epoch)
 	if e != nil || worker != b.Worker || epoch != b.Epoch || t.ActiveRun == nil || *t.ActiveRun != b.RunID {
-		fail(w, problem(409, "STALE_EXECUTION", "执行已结束或不是当前执行器"))
-		return
+		return CodingTask{}, problem(409, "STALE_EXECUTION", "执行已结束或不是当前执行器")
 	}
-	if b.Status != "Stopped" && (t.Control != "Agent" || t.Epoch != epoch || status != "Running") {
-		fail(w, problem(409, "LATE_DELIVERY", "执行控制权已变化，拒绝迟到交付"))
-		return
+	if b.Status != "Stopped" && (t.Control != "Agent" || t.Epoch != epoch || status != "Running" && status != "Delivering") {
+		return CodingTask{}, problem(409, "LATE_DELIVERY", "执行控制权已变化，拒绝迟到交付")
 	}
 	if b.Status != "Stopped" {
-		if e = a.runtimeLease(r.Context(), b.Worker, b.RuntimeEpoch); e != nil {
-			fail(w, e)
-			return
+		var ready bool
+		if e = tx.QueryRow(ctx, `SELECT status='Delivering' AND output ? 'finishRequest' FROM coding_runs WHERE id=$1 AND runtime_id=$2`, b.RunID, b.Worker).Scan(&ready); e != nil || !ready {
+			return CodingTask{}, problem(409, "STALE_DELIVERY", "No active delivery request")
 		}
 	}
 	if b.Status == "Stopped" {
@@ -676,39 +625,42 @@ func (a *App) finishTask(w http.ResponseWriter, r *http.Request) {
 		} else if t.Status == "Running" || t.Status == "Queued" {
 			t.Status = "Review"
 		}
+		var stopped struct {
+			RuntimeStatus string `json:"runtimeStatus"`
+		}
+		_ = json.Unmarshal(b.Output, &stopped)
+		if stopped.RuntimeStatus == "Failed" || stopped.RuntimeStatus == "NeedsReview" {
+			if t.Status != "Canceled" && t.Status != "Completed" && t.Status != "Undelivered" {
+				t.Status = "Failed"
+			}
+		}
 	} else {
-		level, err := a.taskLevel(r.Context(), t.OwnerID, t.TenantID, t.ProjectID)
+		level, err := a.taskLevel(ctx, t.OwnerID, t.TenantID, t.ProjectID)
 		if err != nil {
-			fail(w, err)
-			return
+			return CodingTask{}, err
 		}
 		if level < 30 {
-			fail(w, problem(409, "EXECUTION_REVOKED", "负责人授权已撤销"))
-			return
+			return CodingTask{}, problem(409, "EXECUTION_REVOKED", "负责人授权已撤销")
 		}
-		remoteID, err := a.taskProject(r.Context(), t.TenantID, t.ProjectID)
+		remoteID, err := a.taskProject(ctx, t.TenantID, t.ProjectID)
 		if err != nil {
-			fail(w, err)
-			return
+			return CodingTask{}, err
 		}
 		candidate := t
 		if t.MRIID == 0 && b.MRIID > 0 {
 			candidate.MRIID = b.MRIID
 		}
-		mr, err := a.currentTaskMR(r.Context(), remoteID, candidate)
+		mr, err := a.currentTaskMR(ctx, remoteID, candidate)
 		if err != nil {
-			fail(w, err)
-			return
+			return CodingTask{}, err
 		}
 		if mr.State != "opened" || mr.Head != b.Head || mr.Source != t.Branch || mr.Target != t.TargetBranch {
-			fail(w, problem(409, "REMOTE_COMMIT_MISMATCH", "交付 commit 与 GitLab 当前版本不一致"))
-			return
+			return CodingTask{}, problem(409, "REMOTE_COMMIT_MISMATCH", "交付 commit 与 GitLab 当前版本不一致")
 		}
 		t.MRIID = candidate.MRIID
 		t.Head = b.Head
-		if _, e = tx.Exec(r.Context(), `UPDATE coding_feedback SET status='NeedsReconfirmation' WHERE task_id=$1 AND status='Pending' AND head<>$2`, t.ID, t.Head); e != nil {
-			fail(w, e)
-			return
+		if _, e = tx.Exec(ctx, `UPDATE coding_feedback SET status='NeedsReconfirmation' WHERE task_id=$1 AND status='Pending' AND head<>$2`, t.ID, t.Head); e != nil {
+			return CodingTask{}, e
 		}
 		var evidence struct {
 			Judgment json.RawMessage `json:"judgment"`
@@ -729,23 +681,19 @@ func (a *App) finishTask(w http.ResponseWriter, r *http.Request) {
 	if len(b.Output) == 0 {
 		b.Output = json.RawMessage(`{}`)
 	}
-	_, e = tx.Exec(r.Context(), `UPDATE coding_runs SET status=$2,output=$3,finished_at=now(),lease_until=NULL WHERE id=$1`, b.RunID, b.Status, b.Output)
+	_, e = tx.Exec(ctx, `UPDATE coding_runs SET status=$2,output=CASE WHEN $2='Stopped' THEN output || $3::jsonb ELSE $3::jsonb END,finished_at=now(),lease_until=NULL WHERE id=$1`, b.RunID, b.Status, b.Output)
 	if e != nil {
-		fail(w, e)
-		return
+		return CodingTask{}, e
 	}
-	if e = writeTask(r.Context(), tx, t); e != nil {
-		fail(w, e)
-		return
+	if e = writeTask(ctx, tx, t); e != nil {
+		return CodingTask{}, e
 	}
-	if e = taskEvent(r.Context(), tx, t.ID, "executor", "Execution"+b.Status, Object{"runId": b.RunID, "head": t.Head}); e != nil {
-		fail(w, e)
-		return
+	if e = taskEvent(ctx, tx, t.ID, "executor", "Execution"+b.Status, Object{"runId": b.RunID, "head": t.Head}); e != nil {
+		return CodingTask{}, e
 	}
-	if e = tx.Commit(r.Context()); e != nil {
-		fail(w, e)
-		return
+	if e = tx.Commit(ctx); e != nil {
+		return CodingTask{}, e
 	}
 	t.Version++
-	JSON(w, 200, t)
+	return t, nil
 }

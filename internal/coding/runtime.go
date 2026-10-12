@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
 	"github.com/jackc/pgx/v5"
 	"log/slog"
 	"net/http"
@@ -40,6 +42,10 @@ func (a *App) runtimeLease(ctx context.Context, id string, epoch int64) error {
 	return nil
 }
 func (a *App) RunDispatcher(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	synced := make(chan struct{})
+	go func() { defer close(synced); a.runGitLabSync(ctx) }()
+	defer func() { cancel(); <-synced }()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -54,7 +60,7 @@ func (a *App) RunDispatcher(ctx context.Context) error {
 	}
 }
 func (a *App) reconcileRuns(ctx context.Context) error {
-	rows, e := a.DB.Query(ctx, `SELECT id FROM coding_runs WHERE status IN ('Queued','Running','Stopping') AND (status='Queued' OR runtime_id IS NOT NULL OR execution_snapshot IS NOT NULL) ORDER BY created_at LIMIT 100`)
+	rows, e := a.DB.Query(ctx, `SELECT id FROM coding_runs WHERE status IN ('Queued','Running','Stopping','Delivering') AND (status='Queued' OR runtime_id IS NOT NULL OR execution_snapshot IS NOT NULL OR (status='Stopping' AND claimed_by='')) ORDER BY created_at LIMIT 100`)
 	if e != nil {
 		return e
 	}
@@ -63,11 +69,11 @@ func (a *App) reconcileRuns(ctx context.Context) error {
 		return e
 	}
 	for _, id := range ids {
-		if e = a.reconcileRound(ctx, id); e != nil {
+		if e = a.reconcileRound(ctx, id); e != nil && !errors.Is(e, workspace.ErrPreparing) {
 			slog.Error("round reconciliation failed", "round", id, "error", e)
 		}
 	}
-	return nil
+	return a.reapSandboxes(ctx)
 }
 func (a *App) reconcileRound(ctx context.Context, id string) error {
 	tx, e := a.DB.Begin(ctx)
@@ -87,12 +93,12 @@ func (a *App) reconcileRound(ctx context.Context, id string) error {
 		return e
 	}
 	var runtimeID *string
-	var status, requirements, claimed string
+	var status, requirements string
 	var raw, execution json.RawMessage
-	if e = tx.QueryRow(ctx, `SELECT runtime_id,status,requirements,config_snapshot,execution_snapshot,claimed_by FROM coding_runs WHERE id=$1 FOR UPDATE`, id).Scan(&runtimeID, &status, &requirements, &raw, &execution, &claimed); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT runtime_id,status,requirements,config_snapshot,execution_snapshot FROM coding_runs WHERE id=$1 FOR UPDATE`, id).Scan(&runtimeID, &status, &requirements, &raw, &execution); e != nil {
 		return e
 	}
-	if status != "Queued" && status != "Running" && status != "Stopping" {
+	if status != "Queued" && status != "Running" && status != "Stopping" && status != "Delivering" {
 		return nil
 	}
 	level, e := a.taskLevel(ctx, t.OwnerID, t.TenantID, t.ProjectID)
@@ -116,8 +122,18 @@ func (a *App) reconcileRound(ctx context.Context, id string) error {
 			return e
 		}
 	}
+	if status == "Delivering" {
+		if e = tx.Commit(ctx); e != nil {
+			return e
+		}
+		return a.reconcileDelivery(ctx, id)
+	}
+
 	if runtimeID == nil {
 		if status == "Stopping" || t.Control != "Agent" {
+			if e = a.Workspaces.StopAll(ctx, t.ID, id); e != nil {
+				return e
+			}
 			if _, e = tx.Exec(ctx, `UPDATE coding_runs SET status='Stopped',finished_at=now() WHERE id=$1`, id); e != nil {
 				return e
 			}
@@ -126,13 +142,43 @@ func (a *App) reconcileRound(ctx context.Context, id string) error {
 			t.Control = "Human"
 			if t.Status == "Canceling" {
 				t.Status = "Canceled"
-			} else {
+			} else if t.Status == "Running" || t.Status == "Queued" {
 				t.Status = "Review"
 			}
 			if e = writeTask(ctx, tx, t); e != nil {
 				return e
 			}
 			return tx.Commit(ctx)
+		}
+		{
+			endpoint, prepareErr := a.prepareSandbox(ctx, t, id)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if _, e = tx.Exec(ctx, `UPDATE coding_tasks SET sandbox_active=true WHERE id=$1`, t.ID); e != nil {
+				return e
+			}
+			var output map[string]json.RawMessage
+			var stored []byte
+			if e = tx.QueryRow(ctx, `SELECT output FROM coding_runs WHERE id=$1`, id).Scan(&stored); e != nil {
+				return e
+			}
+			if e = json.Unmarshal(stored, &output); e != nil {
+				return e
+			}
+			if len(output["baseline"]) == 0 {
+				var config CodingSettings
+				if e = json.Unmarshal(raw, &config); e != nil {
+					return e
+				}
+				baseline, err := runAIOChecks(ctx, endpoint, config.Checks)
+				if err != nil {
+					return err
+				}
+				if _, e = tx.Exec(ctx, `UPDATE coding_runs SET output=output || jsonb_build_object('baseline',$2::jsonb) WHERE id=$1`, id, mustJSON(baseline)); e != nil {
+					return e
+				}
+			}
 		}
 		if len(execution) == 0 {
 			var config CodingSettings
@@ -170,7 +216,8 @@ func (a *App) reconcileRound(ctx context.Context, id string) error {
 		if run.ID == "" {
 			return fmt.Errorf("runtime returned empty execution ID")
 		}
-		if _, e = tx.Exec(ctx, `UPDATE coding_runs SET runtime_id=$2,status='Running' WHERE id=$1`, id, run.ID); e != nil {
+		query := `UPDATE coding_runs SET runtime_id=$2,claimed_by=$2,status='Running' WHERE id=$1`
+		if _, e = tx.Exec(ctx, query, id, run.ID); e != nil {
 			return e
 		}
 		t.Status = "Running"
@@ -191,50 +238,47 @@ func (a *App) reconcileRound(ctx context.Context, id string) error {
 	if e = a.request(ctx, "GET", a.Config.RuntimeURL+"/v1/runs/"+*runtimeID, a.Config.RuntimeToken, nil, &run); e != nil {
 		return e
 	}
-	// A canceled model-only run has no external process to stop. A started tool
-	// must acknowledge its stopped process before a new round can begin.
-	if run.Status == "Canceled" && claimed == "" {
-		if _, e = tx.Exec(ctx, `UPDATE coding_runs SET status='Stopped',finished_at=now() WHERE id=$1`, id); e != nil {
+	if run.Status == "Canceled" || run.Status == "Failed" || run.Status == "NeedsReview" || run.Status == "Completed" && (status == "Stopping" || t.Control != "Agent") {
+		if err := a.Workspaces.StopAll(ctx, t.ID, id); err != nil {
+			return err
+		}
+		var roundEpoch int64
+		if e = tx.QueryRow(ctx, `SELECT epoch FROM coding_runs WHERE id=$1`, id).Scan(&roundEpoch); e != nil {
 			return e
 		}
-		t.ActiveRun = nil
-		t.StopConfirmed = true
-		t.Control = "Human"
-		if t.Status == "Canceling" {
-			t.Status = "Canceled"
-		} else if t.Status == "Running" || t.Status == "Queued" {
-			t.Status = "Review"
-		}
-		if e = writeTask(ctx, tx, t); e != nil {
+		if e = tx.Commit(ctx); e != nil {
 			return e
 		}
+		_, e = a.recordDelivery(ctx, t.ID, taskRunRequest{RunID: id, Worker: *runtimeID, Epoch: roundEpoch, Status: "Stopped", Output: mustJSON(Object{"runtimeStatus": run.Status, "error": run.Error, "summary": run.Output})})
+		return e
 	}
-	if run.Status == "Completed" || run.Status == "Failed" { // Delivery has its own verified completion endpoint.
-		if claimed == "" {
-			t.ActiveRun = nil
-			t.Control = "Human"
-			t.StopConfirmed = true
-			t.Status = "Failed"
-			if _, e = tx.Exec(ctx, `UPDATE coding_runs SET status='Failed',output=$2,finished_at=now() WHERE id=$1`, id, mustJSON(Object{"runtimeStatus": run.Status, "error": run.Error, "summary": run.Output})); e != nil {
+	if run.Status == "Completed" {
+		var hasFinish bool
+		if e = tx.QueryRow(ctx, `SELECT output ? 'finishRequest' FROM coding_runs WHERE id=$1`, id).Scan(&hasFinish); e != nil {
+			return e
+		}
+		if hasFinish {
+			if _, e = tx.Exec(ctx, `UPDATE coding_runs SET status='Delivering' WHERE id=$1`, id); e != nil {
 				return e
 			}
-			if e = writeTask(ctx, tx, t); e != nil {
-				return e
-			}
-		} else if status != "Stopping" {
-			t.Control = "Stopping"
-			t.Epoch++
-			t.StopConfirmed = false
-			now := time.Now().UTC()
-			t.StopRequestedAt = &now
-			if _, e = tx.Exec(ctx, `UPDATE coding_runs SET status='Stopping' WHERE id=$1`, id); e != nil {
-				return e
-			}
-			if e = writeTask(ctx, tx, t); e != nil {
-				return e
-			}
+			return tx.Commit(ctx)
 		}
 	}
+	if run.Status == "Completed" {
+		if e = a.Workspaces.StopAll(ctx, t.ID, id); e != nil {
+			return e
+		}
+		var roundEpoch int64
+		if e = tx.QueryRow(ctx, `SELECT epoch FROM coding_runs WHERE id=$1`, id).Scan(&roundEpoch); e != nil {
+			return e
+		}
+		if e = tx.Commit(ctx); e != nil {
+			return e
+		}
+		_, e = a.recordDelivery(ctx, t.ID, taskRunRequest{RunID: id, Worker: *runtimeID, Epoch: roundEpoch, Status: "Stopped", Output: mustJSON(Object{"runtimeStatus": "Failed", "error": "Agent ended without submitting finish", "summary": run.Output})})
+		return e
+	}
+
 	return tx.Commit(ctx)
 }
 func mustJSON(v any) []byte {
@@ -245,15 +289,44 @@ func mustJSON(v any) []byte {
 	return b
 }
 func (a *App) executionSnapshot(ctx context.Context, t CodingTask, round, requirements string, c CodingSettings) ([]byte, error) {
-	endpoint, e := a.toolEndpoint(ctx, t.TenantID, t.ProjectID)
+	e := a.requireProjectExecutor(ctx, t.TenantID, t.ProjectID)
 	if e != nil {
 		return nil, e
 	}
-	tool := func(name, description string, params Object) Object {
-		return Object{"name": name, "description": description, "kind": "HTTP", "url": strings.TrimRight(endpoint, "/") + "/rounds/" + round + "/" + name, "tokenEnv": "CODING_TOOLS_TOKEN", "policy": "Unsafe", "parameters": params}
+	var discussions []struct {
+		ID       string `json:"id"`
+		Resolved bool   `json:"resolved"`
+		Notes    []struct {
+			ID       int64           `json:"id"`
+			Body     string          `json:"body"`
+			System   bool            `json:"system"`
+			Position json.RawMessage `json:"position"`
+			Author   struct {
+				Username string `json:"username"`
+			} `json:"author"`
+		} `json:"notes"`
 	}
-	empty := Object{"type": "object", "properties": Object{}, "additionalProperties": false}
-	tools := []Object{tool("prepare", "Read repository rules, scoped source files and baseline checks before editing.", empty), tool("edit_and_check", "Apply exact localized edits and run required checks. Preserve existing tests. Inspect failed checks before another attempt.", Object{"type": "object", "properties": Object{"edits": Object{"type": "array", "minItems": 1, "maxItems": 12, "items": Object{"type": "object", "properties": Object{"path": Object{"type": "string"}, "before": Object{"type": "string"}, "after": Object{"type": "string"}}, "required": []string{"path", "before", "after"}, "additionalProperties": false}}}, "required": []string{"edits"}, "additionalProperties": false}), tool("deliver", "Commit checked changes, push the task branch and open a Draft MR. Call after checks to hand over existing changes. Assess acceptance criteria separately from test results in judgment; use NeedsHuman when evidence is missing. Never merge.", Object{"type": "object", "properties": Object{"summary": Object{"type": "string"}, "judgment": Object{"type": "object", "properties": Object{"status": Object{"type": "string", "enum": []string{"Met", "Unmet", "NeedsHuman"}}, "summary": Object{"type": "string"}}, "required": []string{"status", "summary"}, "additionalProperties": false}}, "required": []string{"summary", "judgment"}, "additionalProperties": false})}
-	spec := Object{"scope": Object{"tenantID": t.TenantID, "projectID": t.ProjectID, "actorID": t.OwnerID, "taskID": t.ID, "roundID": round}, "query": requirements, "systemPrompt": "You are a coding agent. First call prepare and obey repository AGENTS rules. Diagnose the requested bug. Use edit_and_check for small scoped changes, preserving existing tests. Call deliver once to hand over the checked revision and Draft MR. Never invent tool results or claim the task is merged. Do not exceed the configured repair limit.", "model": Object{"name": c.Model, "baseURL": strings.TrimRight(a.Config.ModelURL, "/") + "/v1"}, "tools": tools, "maxTurns": c.RepairLimit + 4}
+	if len(t.Discussions) > 0 {
+		if e := json.Unmarshal(t.Discussions, &discussions); e != nil {
+			return nil, e
+		}
+	}
+	comments := []Object{}
+	for _, discussion := range discussions {
+		for _, note := range discussion.Notes {
+			if note.System || note.Body == "" {
+				continue
+			}
+			comments = append(comments, Object{"discussionID": discussion.ID, "noteID": note.ID, "author": note.Author.Username, "body": note.Body, "position": note.Position, "resolved": discussion.Resolved})
+		}
+	}
+	query, e := json.Marshal(Object{"requirements": requirements, "task": Object{"title": t.Title, "description": t.Description, "criteria": t.Criteria, "reproduce": t.Reproduce, "constraints": t.Constraints, "reference": t.Reference, "head": t.Head}, "comments": comments, "workspace": Object{"path": "/workspace/repo", "allowedPaths": c.AllowedPaths, "checks": c.Checks, "repairLimit": c.RepairLimit}})
+	if e != nil {
+		return nil, e
+	}
+	spec := Object{"scope": Object{"tenantID": t.TenantID, "projectID": t.ProjectID, "actorID": t.OwnerID, "taskID": t.ID, "roundID": round}, "agentID": c.AgentID, "agentVersion": c.AgentVersion, "query": string(query)}
+	{
+		spec["filesystem"] = Object{"provider": "AIO", "url": strings.TrimRight(a.Config.SandboxGatewayURL, "/") + "/internal/v1/rounds/" + round + "/sandbox", "tokenEnv": "CODING_TOOLS_TOKEN", "workspace": "/workspace/repo"}
+	}
 	return json.Marshal(Object{"spec": spec, "timeoutSeconds": c.TimeoutMinutes * 60})
 }

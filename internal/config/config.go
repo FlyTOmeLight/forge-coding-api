@@ -10,14 +10,30 @@ import (
 )
 
 type Config struct {
-	ToolProjects                                                                                                                                      map[string]string
-	DatabaseURL, PublicURL, TenantURL, TenantToken, ServiceToken, GitLabURL, GitLabPublicURL, GitLabToken, ModelURL, RuntimeURL, RuntimeToken, Listen string
+	WorkspaceNamespace, SandboxGatewayURL, WorkspaceJobImage                                                                                                           string
+	EnabledProjects                                                                                                                                                    map[string]bool
+	DatabaseURL, PublicURL, TenantURL, TenantToken, ServiceToken, GitLabURL, GitLabPublicURL, GitLabToken, GitLabTokenFile, ModelURL, RuntimeURL, RuntimeToken, Listen string
 }
 
 func Load() (Config, error) {
-	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: os.Getenv("PUBLIC_URL"), TenantURL: os.Getenv("TENANT_URL"), TenantToken: os.Getenv("TENANT_TOKEN"), ServiceToken: os.Getenv("SERVICE_TOKEN"), GitLabURL: os.Getenv("GITLAB_URL"), GitLabPublicURL: os.Getenv("GITLAB_PUBLIC_URL"), GitLabToken: os.Getenv("GITLAB_TOKEN"), ModelURL: os.Getenv("MODEL_URL"), RuntimeURL: os.Getenv("RUNTIME_URL"), RuntimeToken: os.Getenv("RUNTIME_TOKEN"), Listen: os.Getenv("LISTEN_ADDR")}
-	if e := json.Unmarshal([]byte(os.Getenv("TOOLS_PROJECTS_JSON")), &c.ToolProjects); e != nil || len(c.ToolProjects) == 0 {
-		return c, errors.New("TOOLS_PROJECTS_JSON must map GitLab project IDs to tool service URLs")
+	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: os.Getenv("PUBLIC_URL"), TenantURL: os.Getenv("TENANT_URL"), TenantToken: os.Getenv("TENANT_TOKEN"), ServiceToken: os.Getenv("SERVICE_TOKEN"), GitLabURL: os.Getenv("GITLAB_URL"), GitLabPublicURL: os.Getenv("GITLAB_PUBLIC_URL"), GitLabToken: os.Getenv("GITLAB_TOKEN"), GitLabTokenFile: os.Getenv("GITLAB_TOKEN_FILE"), ModelURL: os.Getenv("MODEL_URL"), RuntimeURL: os.Getenv("RUNTIME_URL"), RuntimeToken: os.Getenv("RUNTIME_TOKEN"), Listen: os.Getenv("LISTEN_ADDR")}
+	if e := json.Unmarshal([]byte(os.Getenv("CODING_PROJECTS_JSON")), &c.EnabledProjects); e != nil || len(c.EnabledProjects) == 0 {
+		return c, errors.New("CODING_PROJECTS_JSON must map enabled GitLab project IDs to true")
+	}
+	c.WorkspaceNamespace = os.Getenv("WORKSPACE_NAMESPACE")
+	c.WorkspaceJobImage = os.Getenv("WORKSPACE_JOB_IMAGE")
+	c.SandboxGatewayURL = os.Getenv("SANDBOX_GATEWAY_URL")
+	if c.WorkspaceNamespace == "" {
+		return c, errors.New("WORKSPACE_NAMESPACE is required")
+	}
+	{
+		if c.WorkspaceJobImage == "" || c.SandboxGatewayURL == "" {
+			return c, errors.New("WORKSPACE_JOB_IMAGE and SANDBOX_GATEWAY_URL are required with WORKSPACE_NAMESPACE")
+		}
+		u, err := url.Parse(c.SandboxGatewayURL)
+		if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return c, errors.New("invalid SANDBOX_GATEWAY_URL")
+		}
 	}
 	if c.Listen == "" {
 		c.Listen = ":8080"

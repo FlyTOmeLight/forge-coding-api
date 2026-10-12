@@ -13,6 +13,8 @@ import (
 )
 
 type CodingSettings struct {
+	AgentID        string     `json:"agentID"`
+	AgentVersion   int64      `json:"agentVersion"`
 	Version        int64      `json:"version"`
 	BaseBranch     string     `json:"baseBranch"`
 	Model          string     `json:"model"`
@@ -39,8 +41,8 @@ func (a *App) codingSettings(ctx context.Context, tid, pid string) (CodingSettin
 	return c, e
 }
 func (c CodingSettings) validate() error {
-	if strings.TrimSpace(c.Model) == "" || strings.TrimSpace(c.BaseBranch) == "" || len(c.AllowedPaths) == 0 || len(c.AllowedPaths) > 20 || len(c.Checks) == 0 || len(c.Checks) > 10 || c.RepairLimit < 1 || c.RepairLimit > 3 || c.TimeoutMinutes < 1 || c.TimeoutMinutes > 30 {
-		return problem(422, "INVALID_EXECUTION_SETTINGS", "请设置模型、基准分支、修改范围和必过检查；修复次数为 1–3，执行时间为 1–30 分钟")
+	if strings.TrimSpace(c.AgentID) == "" || c.AgentVersion < 1 || strings.TrimSpace(c.BaseBranch) == "" || len(c.AllowedPaths) == 0 || len(c.AllowedPaths) > 20 || len(c.Checks) == 0 || len(c.Checks) > 10 || c.RepairLimit < 1 || c.RepairLimit > 3 || c.TimeoutMinutes < 1 || c.TimeoutMinutes > 30 {
+		return problem(422, "INVALID_EXECUTION_SETTINGS", "请选择已发布 Agent 及版本，并设置基准分支、修改范围和必过检查；修复次数为 1–3，执行时间为 1–30 分钟")
 	}
 	for _, p := range c.AllowedPaths {
 		if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") || path.Clean(p) == "." {
@@ -82,13 +84,15 @@ func (a *App) getCodingSettings(w http.ResponseWriter, r *http.Request, u User) 
 	}
 	executors := []Object{}
 	runtime := Object{"available": a.runtimeReady(r.Context()), "service": "agentic-kit"}
-	models := []string{}
+	agents := []AgentChoice{}
 	if level >= 40 {
-		if names, err := a.modelNames(r.Context()); err == nil {
-			models = names
+		agents, e = a.publishedAgents(r.Context())
+		if e != nil {
+			fail(w, e)
+			return
 		}
 	}
-	JSON(w, 200, Object{"settings": c, "branches": branches, "executors": executors, "runtime": runtime, "models": models, "permissions": Object{"readCode": level >= 20, "createTask": level >= 30, "configureExecution": level >= 40}})
+	JSON(w, 200, Object{"settings": c, "branches": branches, "executors": executors, "runtime": runtime, "agents": agents, "permissions": Object{"readCode": level >= 20, "createTask": level >= 30, "configureExecution": level >= 40}})
 }
 func (a *App) saveCodingSettings(w http.ResponseWriter, r *http.Request, u User) {
 	level, e := a.taskRead(r, u)
@@ -106,6 +110,10 @@ func (a *App) saveCodingSettings(w http.ResponseWriter, r *http.Request, u User)
 		return
 	}
 	if e = c.validate(); e != nil {
+		fail(w, e)
+		return
+	}
+	if e = a.checkAgentBinding(r.Context(), r.PathValue("tid"), r.PathValue("pid"), &c); e != nil {
 		fail(w, e)
 		return
 	}
@@ -204,19 +212,8 @@ func (a *App) checkCodingSettings(w http.ResponseWriter, r *http.Request, u User
 		fail(w, problem(409, "EMPTY_BASE", "基准分支没有可用提交"))
 		return
 	}
-	names, e := a.modelNames(r.Context())
-	if e != nil {
-		fail(w, problem(502, "MODEL_UNAVAILABLE", "无法连接内网模型，请在接入配置中检查服务"))
-		return
-	}
-	found := false
-	for _, name := range names {
-		if name == c.Model {
-			found = true
-		}
-	}
-	if !found {
-		fail(w, problem(422, "MODEL_NOT_FOUND", "配置的模型尚未部署"))
+	if e = a.checkAgentBinding(r.Context(), r.PathValue("tid"), r.PathValue("pid"), &c); e != nil {
+		fail(w, e)
 		return
 	}
 	now := time.Now().UTC()
@@ -230,7 +227,7 @@ func (a *App) checkCodingSettings(w http.ResponseWriter, r *http.Request, u User
 		return
 	}
 	c.CheckedAt = &now
-	JSON(w, 200, Object{"settings": c, "baseHead": b.Commit.ID, "message": "仓库与模型连接通过；必过检查会在每轮实际执行"})
+	JSON(w, 200, Object{"settings": c, "baseHead": b.Commit.ID, "message": "仓库与 Agent 发布版本检查通过；必过检查会在每轮实际执行"})
 }
 func (a *App) codingConnections(w http.ResponseWriter, r *http.Request, u User) {
 	if !u.Operator {

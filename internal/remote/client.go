@@ -58,6 +58,17 @@ func request(ctx context.Context, client *http.Client, service, method, url stri
 		_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		return err
 	}
+	if text, ok := target.(*string); ok {
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+		if err != nil {
+			return &Error{Service: service, Status: 502, Code: "INVALID_RESPONSE"}
+		}
+		if len(raw) > 4<<20 {
+			return &Error{Service: service, Status: 502, Code: "RESPONSE_TOO_LARGE"}
+		}
+		*text = string(raw)
+		return nil
+	}
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(target); err != nil {
 		return &Error{Service: service, Status: 502, Code: "INVALID_RESPONSE"}
 	}

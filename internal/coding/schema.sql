@@ -50,3 +50,8 @@ ALTER TABLE coding_tasks ADD COLUMN IF NOT EXISTS agent_judgment jsonb NOT NULL 
 ALTER TABLE coding_runs ADD COLUMN IF NOT EXISTS runtime_id text;
 ALTER TABLE coding_runs ADD COLUMN IF NOT EXISTS execution_snapshot jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS coding_runtime_run ON coding_runs(runtime_id) WHERE runtime_id IS NOT NULL;
+
+DROP INDEX IF EXISTS coding_one_active_run;
+CREATE UNIQUE INDEX coding_one_active_run ON coding_runs(task_id) WHERE status IN ('Queued','Running','Stopping','Delivering');
+
+ALTER TABLE coding_tasks ADD COLUMN IF NOT EXISTS sandbox_active boolean NOT NULL DEFAULT false;

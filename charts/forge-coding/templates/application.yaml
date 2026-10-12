@@ -11,7 +11,8 @@ spec:
         forge/config-revision: {{ .Values.configRevision | default "initial" | quote }}
       labels: {app: {{ .Release.Name }}-api}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ .Release.Name }}-workspace
+      automountServiceAccountToken: true
       securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
       initContainers:
         - name: migrate
@@ -19,12 +20,29 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [/forge]
           args: [migrate]
+          volumeMounts: [{name: gitlab-token, mountPath: /var/run/forge-gitlab, readOnly: true}]
+          env:
+            - {name: GITLAB_TOKEN_FILE, value: /var/run/forge-gitlab/token}
+            - {name: WORKSPACE_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: SANDBOX_GATEWAY_URL, value: "http://{{ .Release.Name }}"}
+            - {name: WORKSPACE_JOB_IMAGE, value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"}
           envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
+      volumes:
+        - name: gitlab-token
+          secret:
+            secretName: {{ .Values.existingSecret }}
+            items: [{key: GITLAB_TOKEN, path: token}]
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [/forge, api]
+          volumeMounts: [{name: gitlab-token, mountPath: /var/run/forge-gitlab, readOnly: true}]
+          env:
+            - {name: GITLAB_TOKEN_FILE, value: /var/run/forge-gitlab/token}
+            - {name: WORKSPACE_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: SANDBOX_GATEWAY_URL, value: "http://{{ .Release.Name }}"}
+            - {name: WORKSPACE_JOB_IMAGE, value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"}
           envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           resources:
@@ -46,13 +64,25 @@ spec:
         forge/config-revision: {{ .Values.configRevision | default "initial" | quote }}
       labels: {app: {{ .Release.Name }}-dispatcher}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ .Release.Name }}-workspace
+      automountServiceAccountToken: true
       securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
+      volumes:
+        - name: gitlab-token
+          secret:
+            secretName: {{ .Values.existingSecret }}
+            items: [{key: GITLAB_TOKEN, path: token}]
       containers:
         - name: dispatcher
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [/forge, dispatcher]
+          volumeMounts: [{name: gitlab-token, mountPath: /var/run/forge-gitlab, readOnly: true}]
+          env:
+            - {name: GITLAB_TOKEN_FILE, value: /var/run/forge-gitlab/token}
+            - {name: WORKSPACE_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: SANDBOX_GATEWAY_URL, value: "http://{{ .Release.Name }}"}
+            - {name: WORKSPACE_JOB_IMAGE, value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"}
           envFrom: [{secretRef: {name: {{ required "existingSecret required" .Values.existingSecret }}}}]
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           resources:
