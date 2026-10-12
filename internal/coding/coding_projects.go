@@ -82,7 +82,6 @@ func (a *App) getCodingSettings(w http.ResponseWriter, r *http.Request, u User) 
 		fail(w, e)
 		return
 	}
-	executors := []Object{}
 	runtime := Object{"available": a.runtimeReady(r.Context()), "service": "agentic-kit"}
 	agents := []AgentChoice{}
 	if level >= 40 {
@@ -92,7 +91,7 @@ func (a *App) getCodingSettings(w http.ResponseWriter, r *http.Request, u User) 
 			return
 		}
 	}
-	JSON(w, 200, Object{"settings": c, "branches": branches, "executors": executors, "runtime": runtime, "agents": agents, "permissions": Object{"readCode": level >= 20, "createTask": level >= 30, "configureExecution": level >= 40}})
+	JSON(w, 200, Object{"settings": c, "branches": branches, "runtime": runtime, "agents": agents, "permissions": Object{"readCode": level >= 20, "createTask": level >= 30, "configureExecution": level >= 40}})
 }
 func (a *App) saveCodingSettings(w http.ResponseWriter, r *http.Request, u User) {
 	level, e := a.taskRead(r, u)

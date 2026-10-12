@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS coding_project_settings (
  project_id text PRIMARY KEY,tenant_id text NOT NULL,version bigint NOT NULL DEFAULT 1,
  settings jsonb NOT NULL,checked_at timestamptz
 );
-CREATE TABLE IF NOT EXISTS coding_executors (worker_id text PRIMARY KEY,gitlab_project_id bigint NOT NULL,last_seen timestamptz NOT NULL);
+DROP TABLE IF EXISTS coding_executors;
 INSERT INTO schema_versions(version) VALUES(4) ON CONFLICT DO NOTHING;
 ALTER TABLE coding_tasks ADD COLUMN IF NOT EXISTS agent_judgment jsonb NOT NULL DEFAULT '{"status":"Unknown"}';
 
