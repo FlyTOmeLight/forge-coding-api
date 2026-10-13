@@ -1,3 +1,9 @@
+## 2026-10-14：MVP 统一仓库版本
+
+按当前 MVP 发布约定，SDK 删除独立 `go.mod` / `go.sum`，归入根模块 `github.com/FlyTOmeLight/forge-coding-api`，跟随整仓 `v0.17.0` 发布。SDK 的包路径保持 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。旧调用方需删除独立 SDK 模块依赖后改用根模块版本，避免导入歧义；后续需要独立发布时再拆分模块。
+
+隔离 PostgreSQL 下的 `make integration build` 通过，统一包含后端与 SDK 的竞态测试、vet 和两个入口构建。Docker 与 CI 改为编译仓库内的 SDK，不再配置本仓库 SDK 下载凭据。正式 Dockerfile 的无凭据镜像构建通过。
+
 ## 2026-10-14：server-go v0.9.0 重构与 SDK v0.17.0
 
 公开 `service/` 提供共享资源构造，API 改用 `app.Run` 和一次类型化配置解码。HTTP 使用框架 core 类型及 context logger；dispatcher 保持独立、无 HTTP，退出先取消并等待所属任务。现有路由、业务错误 envelope、严格 JSON、任务与交付协议保留。

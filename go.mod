@@ -3,7 +3,6 @@ module github.com/FlyTOmeLight/forge-coding-api
 go 1.27.1
 
 require (
-	github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1 v0.17.0
 	github.com/FlyTOmeLight/server-go v0.9.0
 	github.com/agent-infra/sandbox-sdk-go v0.0.5
 	github.com/gin-gonic/gin v1.12.0
@@ -12,6 +11,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
+	resty.dev/v3 v3.0.0-rc.4
 )
 
 require (
@@ -106,7 +106,6 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	k8s.io/streaming v0.37.1 // indirect
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3 // indirect
-	resty.dev/v3 v3.0.0-rc.4 // indirect
 	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect

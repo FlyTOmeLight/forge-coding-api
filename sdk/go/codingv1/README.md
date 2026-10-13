@@ -1,10 +1,12 @@
 # Forge Coding Go SDK
 
-公开模块：`github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。v0.17.0 使用 server-go v0.9.0，要求 Go 1.27 或更新版本；SDK 独立发布，不依赖后端的 pgx、Kubernetes 或 GitLab SDK。已发布的 v0.16.1 使用 server-go v0.3.1，最低 Go 版本仍为 1.24。
+公开包：`github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。MVP 阶段与整个仓库使用同一个模块和版本，当前为 `v0.17.0`，要求 Go 1.27.1 或更新版本。后续有独立发布需求时再拆分模块；客户端的导入路径保持不变。
 
 ```sh
-go get github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1@v0.17.0
+go get github.com/FlyTOmeLight/forge-coding-api@v0.17.0
 ```
+
+如果之前依赖独立 SDK，先执行 `go mod edit -droprequire=github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`，再安装根模块版本并运行 `go mod tidy`。旧独立模块与根模块同时提供相同包路径，会导致导入歧义，因此需删除旧模块依赖。
 
 ```go
 client, err := codingv1.NewClient("https://coding.example.com", "", nil)
@@ -35,4 +37,4 @@ JSON 请求保留有上限的响应读取，再将业务错误 envelope 交给 `
 
 `Sandbox` 返回流式 `SandboxResponse`；调用方负责关闭 `Body`，并通过 context 控制取消。SDK 不预先读取完整沙箱响应。没有原生 SSE 接口。
 
-验证：`GOWORK=off go test -race ./...`、`GOWORK=off go vet ./...`。后端仓库的 SDK 集成测试通过真实 HTTP Controller 和隔离 PostgreSQL 验证任务幂等、项目隔离与评测服务鉴权。
+验证：在仓库根目录执行 `make integration build`，统一检查后端与 SDK。后端仓库的 SDK 集成测试通过真实 HTTP Controller 和隔离 PostgreSQL 验证任务幂等、项目隔离与评测服务鉴权。
