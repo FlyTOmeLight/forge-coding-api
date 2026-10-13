@@ -96,7 +96,7 @@ func (c *Client) Sandbox(ctx context.Context, req *SandboxRequest) (*SandboxResp
 	if err != nil {
 		return nil, err
 	}
-	r.SetDoNotParseResponse(true).SetBody(req.Body)
+	r.SetResponseDoNotParse(true).SetBody(req.Body)
 	if req.ContentType != "" {
 		r.SetHeader("Content-Type", req.ContentType)
 	}

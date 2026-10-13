@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -419,5 +421,68 @@ func TestSDKSandboxStreamsAndHonorsCancellation(t *testing.T) {
 	}
 	if _, e := c.Sandbox(context.Background(), &SandboxRequest{Method: "GET", Path: "/admin"}); e == nil {
 		t.Fatal("unsupported sandbox API accepted")
+	}
+}
+
+func TestSDKResponseLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		diff      bool
+		size      int
+		wantError bool
+	}{
+		{name: "ordinary-at-limit", size: 4 << 20},
+		{name: "ordinary-over-limit", size: (4 << 20) + 1, wantError: true},
+		{name: "diff-at-limit", diff: true, size: 32 << 20},
+		{name: "diff-over-limit", diff: true, size: (32 << 20) + 1, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{}` + strings.Repeat(" ", tc.size-2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			scope := ProjectScope{TenantID: "t", ProjectID: "p"}
+			if tc.diff {
+				_, err = client.GetTaskDiff(context.Background(), scope, "task")
+			} else {
+				_, err = client.ListTasks(context.Background(), scope)
+			}
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "exceeds size limit") {
+					t.Fatalf("response limit not enforced: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSDKDoesNotRetryMutation(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"code":"UNAVAILABLE","message":"try later"}}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.CreateTask(context.Background(), ProjectScope{TenantID: "t", ProjectID: "p"}, "stable-key", &CreateTaskRequest{Title: "fix"})
+	var detail *serrors.Error
+	if !errors.As(err, &detail) || detail.Code != "UNAVAILABLE" || detail.Status != http.StatusServiceUnavailable {
+		t.Fatalf("mutation failure lost: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mutation attempted %d times", got)
 	}
 }

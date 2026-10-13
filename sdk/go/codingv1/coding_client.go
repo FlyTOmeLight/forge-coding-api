@@ -106,7 +106,7 @@ func jsonCall[T any](r *resty.Request, method, path string, body any) (*T, error
 }
 
 func jsonCallLimit[T any](r *resty.Request, method, path string, body any, limit int64) (*T, error) {
-	r.SetDoNotParseResponse(true)
+	r.SetResponseDoNotParse(true)
 	if body != nil {
 		r.SetBody(body)
 	}
