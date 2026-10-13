@@ -38,7 +38,11 @@ func TestServerConfigSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := FromSnapshot(manager.Snapshot())
+	var decoded struct{ Coding Config }
+	if err := manager.Snapshot().Unmarshal(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := decoded.Coding.Validate()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +56,10 @@ func TestServerConfigSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FromSnapshot(snapshot); err == nil {
+	if err := snapshot.Unmarshal(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decoded.Coding.Validate(); err == nil {
 		t.Fatal("invalid service credential accepted")
 	}
 }

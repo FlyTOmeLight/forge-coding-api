@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
@@ -13,7 +13,7 @@ import (
 
 type TaskDiff = codingv1.TaskDiff
 
-func (a *App) getTaskDiff(gc *gin.Context, u User) {
+func (a *App) getTaskDiff(gc *core.Context, u User) {
 	w, r := gc.Writer, gc.Request
 	if _, err := a.taskRead(r, u); err != nil {
 		fail(gc, err)

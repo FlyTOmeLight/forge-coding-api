@@ -1,6 +1,6 @@
 # Forge Coding API
 
-企业 Coding Agent 的业务后端，使用 Go / [server-go v0.3.1](https://github.com/FlyTOmeLight/server-go/releases/tag/v0.3.1) / Gin。前端复用 [forge-tenant-web](https://github.com/FlyTOmeLight/forge-tenant-web)。租户、团队和项目权限由 [forge-tenant-api](https://github.com/FlyTOmeLight/forge-tenant-api) 管理。模型调用和持久化执行由 [agentic-kit-api](https://github.com/FlyTOmeLight/agentic-kit-api) 与 [agentic-kit-worker](https://github.com/FlyTOmeLight/agentic-kit-worker) 承担。
+企业 Coding Agent 的业务后端，使用 Go / [server-go v0.9.0](https://github.com/FlyTOmeLight/server-go/releases/tag/v0.9.0) / Gin。前端复用 [forge-tenant-web](https://github.com/FlyTOmeLight/forge-tenant-web)。租户、团队和项目权限由 [forge-tenant-api](https://github.com/FlyTOmeLight/forge-tenant-api) 管理。模型调用和持久化执行由 [agentic-kit-api](https://github.com/FlyTOmeLight/agentic-kit-api) 与 [agentic-kit-worker](https://github.com/FlyTOmeLight/agentic-kit-worker) 承担。
 
 研发任务包含负责人、指定审查者、验收条件、分支、MR、人工介入和多轮执行。每轮保存项目配置与 Agent 发布版本，并关联一个 Agentic `runtime_id`；同一任务跨轮复用同一个 Agent 会话。执行完成不会直接完成研发任务；开放任务在同步到 MR 合入事实时完成。
 
@@ -8,15 +8,21 @@
 
 - `cmd/server/`：API、dispatcher、migrate 入口。
 - `cmd/import-tenant/`：停写后将旧租户库的任务表导入空 Coding 数据库。
-- `internal/service/`：Bootstrap 资源装配、HTTPHost 服务生命周期和独立 dispatcher。
+- `service/`：公开构造、类型化配置装配、HTTP 生命周期和独立 dispatcher。
 - `internal/table/`：pgx 数据库连接、迁移、任务模型与事务内持久化。
 - `internal/app/coding/`：任务业务、HTTP 接口、租户授权、执行提交和结果验证。
 - `internal/client/`：租户与运行时 HTTP 协议；`gitlab/` 使用官方 Go SDK，保留业务类型与 Secret 轮换映射。
 - `sdk/go/codingv1/`：独立发布的公开 Go SDK，任务、配置、候选发布、评测和工具契约。
-- `internal/config/`、`conf/server/`：配置加载与配置样例。
+- `internal/config/`、`conf/server/`：业务配置校验与配置样例。
 - `internal/workspace/`：任务级 AIO Pod/PVC、仓库准备、候选快照与受控 GitLab 推送。
 - `deploy/docker/`：服务镜像；镜像内自带 `/conf/server/config.toml`。
 - `deploy/charts/`：API/dispatcher、数据库和沙箱资源权限的 Helm Chart。
+
+## 装配与资源所有权
+
+HTTP 入口使用 `app.Run(ctx, options, service.Build)`，统一管理配置、日志、连接和退出。`Build` 校验 `service.Config.Coding` 后交付数据库及 HTTP 连接，再构造 Coding。构造失败、路由注册失败和正常退出都由框架按顺序清理。
+
+组合应用先调用 `CodingConfig.Validate()`，再用 `service.New(cfg, database, httpClient, dispatcher)` 注入共享连接并交给 `runtime.AddService`。`Coding.Stop` 仅停止所属任务，连接由创建它们的宿主关闭。开启 dispatcher 的组合宿主应通过 `logger.WithContext` 给运行 context 注入日志。独立 `dispatcher` 由 `service.RunDispatcher` 管理，保持无 HTTP；`migrate` 只迁移数据库，不创建 Kubernetes 客户端。
 
 ## 运行与部署
 
@@ -40,7 +46,7 @@ helm upgrade --install forge-coding deploy/charts/forge-coding -n forge-tenant-s
 
 工具写入和命令执行按 Unsafe 处理；结果不明时进入人工检查。Worker 接管前停止旧沙箱计算实例，PVC 保留代码。取消、人工介入和故障停止需要确认相关 Pod 已停止。正常交付保留任务沙箱；任务结束或无活动轮次且闲置 30 分钟后停止计算。工作卷保留，下一轮可重新创建 Pod。人工移动分支时刷新仓库，工作目录外的依赖缓存继续保留。已完成轮次的 PVC 保留用于检查，当前需由管理员按保留策略清理。
 
-server-go 负责配置快照、资源初始化与关闭、请求 ID、请求日志、Recovery 和 404/405。业务错误继续返回 `{error:{code,message}}`，框架的通用错误返回平铺 `{code,message,requestId,statusCode}`。JSON 接口拒绝未知字段及多个文档，沿用 64 KiB 业务请求上限，超限返回 413。`/healthz` 表示框架服务状态，`/readyz` 检查数据库；Helm 使用后者作为 API 就绪探针。运行配置在启动时冻结，修改配置后重启对应进程；GitLab Secret 文件仍按请求读取。
+server-go 负责配置快照、资源初始化与关闭、请求 ID、请求日志、Recovery 和 404/405。业务错误继续返回 `{error:{code,message}}`，框架的通用错误返回平铺 `{code,message,requestId,statusCode}`。JSON 接口拒绝未知字段及多个文档，沿用 64 KiB 业务请求上限，超限返回 413。`/healthz` 表示框架服务状态，`/readyz` 检查数据库；Helm 使用后者作为 API 就绪探针。业务配置在启动时一次解码并冻结，修改后重启对应进程；API 通过 `app.Run` 监听框架支持的 HTTP 配置更新，路由重建不会重新构造业务对象。GitLab Secret 文件仍按请求读取。
 
 新增依赖为官方 AIO Go SDK（对接实际文件和命令协议）与 Kubernetes client-go（资源创建、原生 exec 暂停/恢复、状态与停止确认）。不再部署自定义 Python 工具服务。
 
@@ -102,7 +108,7 @@ kubectl -n forge-tenant-split logs job/gitlab-credentials-check
 
 ## Go SDK 与 GitLab 接入
 
-公开模块 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1` 独立发布，版本 `v0.16.1`，要求 Go 1.24 或更新版本。安装与调用示例见 [SDK README](sdk/go/codingv1/README.md)。SDK 复用 server-go 的连接、context、超时与错误解码，支持项目会话、服务令牌、稳定幂等键和流式沙箱响应；服务端复用公开请求类型和领域数据。Agentic API 的 Coding 评测环境调用使用同一 SDK，保留其领域类型转换。
+公开模块 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1` 独立发布，当前版本为 `v0.17.0`，使用 server-go v0.9.0，要求 Go 1.27 或更新版本。根模块直接引用该发布版本，无本地替换。安装与调用示例见 [SDK README](sdk/go/codingv1/README.md)。SDK 复用 server-go 的连接、context、超时与错误解码，支持项目会话、服务令牌、稳定幂等键和流式沙箱响应；服务端复用公开请求类型和领域数据。Agentic API 的 Coding 评测环境调用使用同一 SDK，保留其领域类型转换。
 
 GitLab 接入使用官方 `gitlab.com/gitlab-org/api/client-go v1.46.0`。分支、MR、评论、版本和 PAT 查询/创建/撤销由 SDK 处理。应用只保留业务类型转换、Draft 标题规则、按请求读取 Secret 和 4 MiB 原始 diff 上限。原始 diff 使用 SDK 的 Request/Do 与有上限的 writer，避免官方 byte-slice 方法读取整个无限制响应。写操作不自动重试；401/403 使用 SDK 错误，404 映射 SDK 的 `ErrNotFound`。凭据更新错误不回显令牌正文。
 

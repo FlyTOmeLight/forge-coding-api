@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/FlyTOmeLight/server-go/logger"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
@@ -76,7 +76,7 @@ func (a *App) RunDispatcher(ctx context.Context) error {
 			return nil
 		case <-tick.C:
 			if e := a.reconcileRuns(ctx); e != nil && ctx.Err() == nil {
-				slog.Error("execution reconciliation failed", "error", e)
+				logger.FromContext(ctx).Errorf(ctx, "execution reconciliation failed: %v", e)
 			}
 		}
 	}
@@ -96,7 +96,7 @@ func (a *App) reconcileRuns(ctx context.Context) error {
 	}
 	for _, id := range ids {
 		if e = a.reconcileRound(ctx, id); e != nil && !errors.Is(e, workspace.ErrPreparing) {
-			slog.Error("round reconciliation failed", "round", id, "error", e)
+			logger.FromContext(ctx).Errorf(ctx, "round reconciliation failed: round=%s: %v", id, e)
 		}
 	}
 	if err := a.reapEvaluationEnvironments(ctx); err != nil {

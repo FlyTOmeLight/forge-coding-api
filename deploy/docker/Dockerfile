@@ -6,6 +6,7 @@ RUN --mount=type=secret,id=github_netrc,target=/root/.netrc,required=true \
     GOPRIVATE=github.com/FlyTOmeLight/forge-coding-api go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY service ./service
 COPY conf ./conf
 RUN CGO_ENABLED=0 go build -tags=nomsgpack -trimpath -ldflags='-s -w' -o /forge ./cmd/server
 FROM debian:bookworm-slim

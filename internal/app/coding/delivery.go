@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
@@ -22,7 +22,7 @@ type deliveryState struct {
 	Receipt  *workspace.PublishReceipt `json:"publication"`
 }
 
-func (a *App) publicationPermit(gc *gin.Context) {
+func (a *App) publicationPermit(gc *core.Context) {
 	r := gc.Request
 	var t table.Task
 	var epoch int64

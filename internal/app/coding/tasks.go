@@ -12,52 +12,12 @@ import (
 	"time"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/FlyTOmeLight/server-go/auth"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 )
-
-func (a *App) RegisterRoutes(m *gin.RouterGroup) error {
-	m.Use(pathValues)
-	internal := m.Group("/internal", auth.BearerTokens(map[string]string{a.Config.ServiceToken: "coding-runtime"}))
-	internal.Handle("POST", "/v1/rounds/:run/publication-permit", a.publicationPermit)
-	internal.Handle("GET", "/v1/rounds/:run/sandbox/*path", a.sandboxProxy)
-	internal.Handle("POST", "/v1/rounds/:run/sandbox/*path", a.sandboxProxy)
-	internal.Handle("POST", "/v1/evaluation-environments/:trial", a.evaluationEnvironment)
-	internal.Handle("GET", "/v1/evaluation-environments/:trial/sandbox/*path", a.evaluationSandbox)
-	internal.Handle("POST", "/v1/evaluation-environments/:trial/sandbox/*path", a.evaluationSandbox)
-	internal.Handle("POST", "/v1/evaluation-tools/finish", a.evaluationFinish)
-	internal.Handle("POST", "/v1/evaluation-tools/run_checks", a.evaluationChecks)
-	internal.Handle("POST", "/v1/tools/finish", a.submitFinish)
-	internal.Handle("POST", "/v1/tools/run_checks", a.sandboxChecks)
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/tasks", a.authorized(a.listTasks))
-	m.Handle("POST", "/api/v1/tenants/:tid/projects/:pid/tasks", a.authorized(a.createTask))
-	m.Handle("POST", "/api/v1/tenants/:tid/projects/:pid/tasks/new", a.authorized(a.createProblemTask))
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/coding-releases", a.authorized(a.getCodingReleases))
-	m.Handle("POST", "/api/v1/tenants/:tid/projects/:pid/coding-releases", a.authorized(a.enableCodingRelease))
-	m.Handle(
-		"POST",
-		"/api/v1/tenants/:tid/projects/:pid/coding-releases/:release/restore",
-		a.authorized(a.restoreCodingRelease),
-	)
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/coding-settings", a.authorized(a.getCodingSettings))
-	m.Handle("PUT", "/api/v1/tenants/:tid/projects/:pid/coding-settings", a.authorized(a.saveCodingSettings))
-	m.Handle(
-		"POST",
-		"/api/v1/tenants/:tid/projects/:pid/coding-settings/check",
-		a.authorized(a.checkCodingSettings),
-	)
-	m.Handle("GET", "/api/v1/platform/connections", a.authorized(a.codingConnections))
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task", a.authorized(a.getTask))
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/diff", a.authorized(a.getTaskDiff))
-	m.Handle("GET", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/runs/:run/trace", a.authorized(a.getRunTrace))
-	m.Handle("POST", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/actions", a.authorized(a.taskAction))
-	m.Handle("POST", "/api/v1/tenants/:tid/projects/:pid/tasks/:task/sync", a.authorized(a.syncTask))
-	return nil
-}
 
 func (a *App) taskLevel(ctx context.Context, uid, tid, pid string) (int, error) {
 	v, e := a.access(ctx, uid, tid, pid)
@@ -79,7 +39,7 @@ func (a *App) taskRead(r *http.Request, u User) (int, error) {
 	return level, nil
 }
 
-func (a *App) listTasks(gc *gin.Context, u User) {
+func (a *App) listTasks(gc *core.Context, u User) {
 	r := gc.Request
 	if _, e := a.taskRead(r, u); e != nil {
 		fail(gc, e)
@@ -112,7 +72,7 @@ func (a *App) listTasks(gc *gin.Context, u User) {
 	gc.JSON(200, Object{"items": items})
 }
 
-func (a *App) getTask(gc *gin.Context, u User) {
+func (a *App) getTask(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -211,7 +171,7 @@ func (a *App) taskProject(ctx context.Context, tid, pid string) (int64, error) {
 	return p.GitLabID, e
 }
 
-func (a *App) createTask(gc *gin.Context, u User) {
+func (a *App) createTask(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -296,7 +256,7 @@ func (a *App) createTask(gc *gin.Context, u User) {
 }
 
 // taskAction serializes control transitions. Versioned writes reject stale clients.
-func (a *App) taskAction(gc *gin.Context, u User) {
+func (a *App) taskAction(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -639,7 +599,7 @@ func (a *App) taskAction(gc *gin.Context, u User) {
 }
 
 // syncTask imports remote facts without treating comments or MR reopen as execution commands.
-func (a *App) syncTask(gc *gin.Context, u User) {
+func (a *App) syncTask(gc *core.Context, u User) {
 	r := gc.Request
 	if _, e := a.taskRead(r, u); e != nil {
 		fail(gc, e)

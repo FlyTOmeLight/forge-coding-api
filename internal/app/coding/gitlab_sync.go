@@ -3,10 +3,10 @@ package coding
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"reflect"
 	"time"
 
+	"github.com/FlyTOmeLight/server-go/logger"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
@@ -18,7 +18,7 @@ func (a *App) runGitLabSync(ctx context.Context) {
 	defer tick.Stop()
 	for {
 		if err := a.reconcileGitLabTasks(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("GitLab task scan failed", "error", err)
+			logger.FromContext(ctx).Errorf(ctx, "GitLab task scan failed: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -48,7 +48,7 @@ func (a *App) reconcileGitLabTasks(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if _, err := a.syncTaskFacts(ctx, task, "gitlab-sync"); err != nil && ctx.Err() == nil {
-			slog.Error("GitLab task sync failed", "task", task.ID, "error", err)
+			logger.FromContext(ctx).Errorf(ctx, "GitLab task sync failed: task=%s: %v", task.ID, err)
 		}
 	}
 	return nil

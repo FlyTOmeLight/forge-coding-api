@@ -8,12 +8,12 @@ import (
 	"github.com/FlyTOmeLight/server-go/conf"
 	"github.com/FlyTOmeLight/server-go/host"
 	"github.com/FlyTOmeLight/server-go/logger"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 )
 
 type testService struct{ app *App }
 
-func (s testService) RegisterRoutes(r *gin.RouterGroup) error { return s.app.RegisterRoutes(r) }
+func (s testService) RegisterRoutes(r *core.RouterGroup) error { return s.app.RegisterRoutes(r) }
 
 func (testService) Start(context.Context) error { return nil }
 
@@ -33,7 +33,7 @@ func (a *App) Handler() http.Handler {
 	h, err := host.NewHTTPHost(
 		manager,
 		log,
-		func(e *gin.Engine, _ *conf.Config) error { e.RedirectTrailingSlash = false; return nil },
+		func(e *core.Engine, _ *conf.Config) error { e.RedirectTrailingSlash = false; return nil },
 		testService{app: a},
 	)
 	if err != nil {

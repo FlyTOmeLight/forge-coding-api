@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
@@ -76,7 +76,7 @@ func (a *App) currentTaskMR(ctx context.Context, project int64, t table.Task) (g
 	return gitlab.MergeRequest{State: "opened", Head: b.Commit.ID, Source: t.Branch, Target: t.TargetBranch}, nil
 }
 
-func (a *App) createProblemTask(gc *gin.Context, u User) {
+func (a *App) createProblemTask(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
@@ -81,7 +81,7 @@ func (c CodingSettings) validateParameters() error {
 	return nil
 }
 
-func (a *App) getCodingSettings(gc *gin.Context, u User) {
+func (a *App) getCodingSettings(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -138,7 +138,7 @@ func (a *App) getCodingSettings(gc *gin.Context, u User) {
 	)
 }
 
-func (a *App) saveCodingSettings(gc *gin.Context, u User) {
+func (a *App) saveCodingSettings(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -264,7 +264,7 @@ func (a *App) modelNames(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-func (a *App) checkCodingSettings(gc *gin.Context, u User) {
+func (a *App) checkCodingSettings(gc *core.Context, u User) {
 	r := gc.Request
 	level, e := a.taskRead(r, u)
 	if e != nil {
@@ -323,7 +323,7 @@ func (a *App) checkCodingSettings(gc *gin.Context, u User) {
 	gc.JSON(200, Object{"settings": c, "baseHead": b.Commit.ID, "message": "仓库与 Agent 发布版本检查通过；必过检查会在每轮实际执行"})
 }
 
-func (a *App) codingConnections(gc *gin.Context, u User) {
+func (a *App) codingConnections(gc *core.Context, u User) {
 	r := gc.Request
 	if !u.Operator {
 		fail(gc, problem(403, "FORBIDDEN", "需要平台管理权限"))

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,7 +14,8 @@ import (
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	serrors "github.com/FlyTOmeLight/server-go/errors"
-	"github.com/gin-gonic/gin"
+	"github.com/FlyTOmeLight/server-go/logger"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
@@ -60,7 +60,7 @@ func (a *App) evaluationRepository(ctx context.Context, req evaluationRequest) (
 	)
 }
 
-func (a *App) evaluationEnvironment(gc *gin.Context) {
+func (a *App) evaluationEnvironment(gc *core.Context) {
 	w, r := gc.Writer, gc.Request
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(190 * time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
@@ -362,7 +362,8 @@ func (a *App) evaluationEnvironment(gc *gin.Context) {
 	if err != nil {
 		evidence.Status = "Failed"
 		evidence.Error = "Independent verification did not return exit codes"
-		slog.Error("coding evaluation verification failed", "trial", id, "error", err)
+		logger.FromContext(r.Context()).
+			Errorf(r.Context(), "coding evaluation verification failed: trial=%s: %v", id, err)
 	} else {
 		evidence.Checks = checks
 		evidence.Status = "Completed"
@@ -447,7 +448,7 @@ func (a *App) evaluationIdentity(r *http.Request) (string, evaluationRequest, er
 	return id, req, nil
 }
 
-func (a *App) evaluationSandbox(gc *gin.Context) {
+func (a *App) evaluationSandbox(gc *core.Context) {
 	w, r := gc.Writer, gc.Request
 	id, _, err := a.evaluationIdentity(r)
 	if err != nil {
@@ -496,7 +497,7 @@ func (a *App) evaluationSandbox(gc *gin.Context) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (a *App) evaluationFinish(gc *gin.Context) {
+func (a *App) evaluationFinish(gc *core.Context) {
 	r := gc.Request
 	_, _, err := a.evaluationIdentity(r)
 	if err != nil {
@@ -515,7 +516,7 @@ func (a *App) evaluationFinish(gc *gin.Context) {
 	gc.JSON(200, Object{"accepted": true, "summary": finish.Summary, "verification": "pending independent checks"})
 }
 
-func (a *App) evaluationChecks(gc *gin.Context) {
+func (a *App) evaluationChecks(gc *core.Context) {
 	r := gc.Request
 	id, req, err := a.evaluationIdentity(r)
 	if err != nil {

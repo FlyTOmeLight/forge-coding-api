@@ -1,3 +1,19 @@
+## 2026-10-14：server-go v0.9.0 重构与 SDK v0.17.0
+
+公开 `service/` 提供共享资源构造，API 改用 `app.Run` 和一次类型化配置解码。HTTP 使用框架 core 类型及 context logger；dispatcher 保持独立、无 HTTP，退出先取消并等待所属任务。现有路由、业务错误 envelope、严格 JSON、任务与交付协议保留。
+
+已验证：
+
+- 独立 PostgreSQL 17.6 容器中的根模块完整 `go test -race -count=1 ./...`；SDK 独立 race 测试；两个模块的 `go vet`。
+- 新生命周期测试验证装配失败清理、真实 HTTP 启动/取消、初始化 context 结束后仍可运行，以及组合服务停止后不关闭共享连接。
+- 两个程序入口构建、Helm lint、Docker 镜像构建。实际 `migrate` 在没有 Kubernetes 配置时完成数据库迁移。
+- 测试镜像 API 的 healthz、readyz、401、404 请求 ID、405 和尾斜杠契约；API 与 dispatcher 收到 SIGTERM 后均退出码 0。
+- SDK 覆盖 4/32 MiB 响应上限、业务错误解码、不重试变更请求、请求身份隔离和流式取消。
+
+SDK v0.17.0 已发布，根模块已下载并引用该正式版本。SDK 适配 Resty v3.0.0-rc.4，最低 Go 版本升至 1.27。最终隔离数据库下的 `make integration build` 使用 `GOWORK=off` 和正式依赖通过，根模块和 SDK 均无本地替换；正式 Dockerfile 使用发布依赖的镜像构建通过。临时联调 modfile 已删除。
+
+验证只使用本次隔离数据库和假 Kubernetes 连接配置，未连接业务集群、调用模型或执行真实 GitLab MR 用例。测试容器、网络和镜像已清理。
+
 ## 2026-10-13 GitLab 官方 SDK 与 Coding Go SDK
 
 GitLab 分支、MR、评论、版本和 PAT 接入改用官方 `client-go v1.46.0`，删除自定义 HTTP 请求与通用响应解析。业务只保留类型转换、按请求读取 Secret、Draft 规则及 4 MiB 原始 diff 上限；404 映射 SDK 的 ErrNotFound，写操作不自动重试，PAT 错误不回显令牌。

@@ -3,13 +3,13 @@ package coding
 import (
 	"context"
 
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
 )
 
-func (a *App) authorized(fn func(*gin.Context, User)) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func (a *App) authorized(fn func(*core.Context, User)) core.HandlerFunc {
+	return func(c *core.Context) {
 		r := c.Request
 		cookie, err := r.Cookie("forge_session")
 		if err != nil {

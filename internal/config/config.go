@@ -6,29 +6,19 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	"github.com/FlyTOmeLight/server-go/conf"
 )
 
 type Config struct {
+	ProjectsJSON                                                                                                                                               string
 	WorkspaceNamespace, SandboxGatewayURL, WorkspaceJobImage                                                                                                   string
 	EnabledProjects                                                                                                                                            map[string]bool
 	DatabaseURL, PublicURL, TenantURL, TenantToken, ServiceToken, GitLabURL, GitLabPublicURL, GitLabToken, GitLabTokenFile, ModelURL, RuntimeURL, RuntimeToken string
 }
 
-// FromSnapshot reads the immutable business configuration supplied by server-go.
-func FromSnapshot(snapshot *conf.Config) (Config, error) {
-	var c Config
-	if err := snapshot.UnmarshalKey("Coding", &c); err != nil {
-		return c, err
-	}
-	var projects struct{ ProjectsJSON string }
-	if err := snapshot.UnmarshalKey("Coding", &projects); err != nil {
-		return c, err
-	}
-
+// Validate resolves business configuration after the framework decodes it once.
+func (c Config) Validate() (Config, error) {
 	if e := json.Unmarshal(
-		[]byte(projects.ProjectsJSON),
+		[]byte(c.ProjectsJSON),
 		&c.EnabledProjects,
 	); e != nil ||
 		len(c.EnabledProjects) == 0 {

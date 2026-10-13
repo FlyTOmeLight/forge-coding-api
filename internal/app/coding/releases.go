@@ -8,7 +8,7 @@ import (
 	"time"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
@@ -40,7 +40,7 @@ func scanRelease(row pgx.Row) (CodingRelease, error) {
 	return out, err
 }
 
-func (a *App) getCodingReleases(gc *gin.Context, u User) {
+func (a *App) getCodingReleases(gc *core.Context, u User) {
 	r := gc.Request
 	level, err := a.taskRead(r, u)
 	if err != nil {
@@ -74,15 +74,15 @@ func (a *App) getCodingReleases(gc *gin.Context, u User) {
 	gc.JSON(200, Object{"items": out, "canEnable": level >= 40})
 }
 
-func (a *App) enableCodingRelease(gc *gin.Context, u User) {
+func (a *App) enableCodingRelease(gc *core.Context, u User) {
 	a.changeCodingRelease(gc, u, false)
 }
 
-func (a *App) restoreCodingRelease(gc *gin.Context, u User) {
+func (a *App) restoreCodingRelease(gc *core.Context, u User) {
 	a.changeCodingRelease(gc, u, true)
 }
 
-func (a *App) changeCodingRelease(gc *gin.Context, u User, restore bool) {
+func (a *App) changeCodingRelease(gc *core.Context, u User, restore bool) {
 	r := gc.Request
 	level, err := a.taskRead(r, u)
 	if err != nil {

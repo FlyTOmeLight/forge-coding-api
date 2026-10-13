@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
-	"github.com/gin-gonic/gin"
+	core "github.com/FlyTOmeLight/server-go/pkg"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
@@ -99,7 +99,7 @@ func (a *App) prepareSandbox(ctx context.Context, t table.Task, round string) (w
 	return a.Workspaces.Ensure(ctx, t.ID, round, repository)
 }
 
-func (a *App) sandboxProxy(gc *gin.Context) {
+func (a *App) sandboxProxy(gc *core.Context) {
 	w, r := gc.Writer, gc.Request
 	task, b, err := a.sandboxIdentity(r)
 	if err != nil {
@@ -153,7 +153,7 @@ func (a *App) sandboxProxy(gc *gin.Context) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (a *App) submitFinish(gc *gin.Context) {
+func (a *App) submitFinish(gc *core.Context) {
 	r := gc.Request
 	task, b, err := a.sandboxIdentity(r)
 	if err != nil {
@@ -194,7 +194,7 @@ func (a *App) submitFinish(gc *gin.Context) {
 	gc.JSON(200, Object{"accepted": true, "roundID": b.RunID, "taskID": task.ID})
 }
 
-func (a *App) sandboxChecks(gc *gin.Context) {
+func (a *App) sandboxChecks(gc *core.Context) {
 	r := gc.Request
 	task, b, err := a.sandboxIdentity(r)
 	if err != nil {

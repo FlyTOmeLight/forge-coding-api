@@ -46,13 +46,17 @@ func TestFrameworkResourceLifecycle(t *testing.T) {
 	query := endpoint.Query()
 	query.Set("search_path", schema)
 	endpoint.RawQuery = query.Encode()
-	svc := New(config.Config{DatabaseURL: endpoint.String(), ServiceToken: strings.Repeat("s", 32)}, false)
-	bootstrap := server.NewBootstrap(svc)
+	r := &resources{databaseURL: endpoint.String()}
+	bootstrap := server.NewBootstrap(r)
 	if err := bootstrap.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
 	defer bootstrap.Close(context.Background())
-	if err := svc.Migrate(ctx); err != nil {
+	svc, err := New(config.Config{ServiceToken: strings.Repeat("s", 32)}, r.db, r.http, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Migrate(ctx, r.db); err != nil {
 		t.Fatal(err)
 	}
 	manager, err := conf.NewManagerFromConfig(
@@ -134,16 +138,9 @@ func TestFrameworkResourceLifecycle(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := bootstrap.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.app.DB.Ping(ctx); err == nil {
-		t.Fatal("pool retained after close")
-	}
 	// The separately deployed dispatcher cancels and joins all of its workers.
-	worker := New(config.Config{DatabaseURL: endpoint.String()}, true)
-	workerBootstrap := server.NewBootstrap(worker)
-	if err := workerBootstrap.Initialize(ctx); err != nil {
+	worker, err := New(config.Config{}, r.db, r.http, true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
@@ -151,13 +148,25 @@ func TestFrameworkResourceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopWorker()
-	if err := workerBootstrap.Close(ctx); err != nil {
+	if err := worker.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	failed := New(config.Config{DatabaseURL: endpoint.String()}, false)
+	if err := r.db.Ping(ctx); err != nil {
+		t.Fatalf("borrowed pool closed by service: %v", err)
+	}
+	if err := bootstrap.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.app.DB.Ping(ctx); err == nil {
+		t.Fatal("pool retained after close")
+	}
 	canceled, stopCanceled := context.WithCancel(ctx)
 	stopCanceled()
-	if err := server.NewBootstrap(failed).Initialize(canceled); !errors.Is(err, context.Canceled) {
+	if err := server.NewBootstrap(&resources{databaseURL: endpoint.String()}).
+		Initialize(canceled); !errors.Is(
+		err,
+		context.Canceled,
+	) {
 		t.Fatalf("startup cancellation lost: %v", err)
 	}
 }

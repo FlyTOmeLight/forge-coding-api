@@ -34,7 +34,7 @@ type App struct {
 	GitLab     *gitlab.GitLab
 }
 
-// New borrows resources owned by service.Coding.
+// New borrows resources owned by the application host.
 func New(c config.Config, db *pgxpool.Pool, h *http.Client, workspaces Workspace, g *gitlab.GitLab) *App {
 	return &App{
 		DB:         db,
