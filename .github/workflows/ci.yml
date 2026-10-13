@@ -21,7 +21,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Configure private SDK access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYNETRC'
+          import os
+          from pathlib import Path
+          credentials = Path.home() / ".netrc"
+          credentials.write_text("machine github.com\nlogin x-access-token\npassword " + os.environ["GH_TOKEN"] + "\n")
+          credentials.chmod(0o600)
+          PYNETRC
+          go env -w GOPRIVATE=github.com/FlyTOmeLight/forge-coding-api
       - run: make integration build
       - uses: azure/setup-helm@v4.3.0
       - run: helm lint deploy/charts/forge-coding --set existingSecret=test,database.existingSecret=test
-      - run: docker build -f deploy/docker/Dockerfile -t forge-coding-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile --secret id=github_netrc,src="$HOME/.netrc" -t forge-coding-api:ci .

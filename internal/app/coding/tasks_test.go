@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
@@ -84,6 +85,7 @@ func setupTask(t *testing.T) *taskFixture {
 		db,
 		h,
 		nil,
+		nil,
 	)
 	t.Cleanup(func() {
 		h.CloseIdleConnections()
@@ -121,6 +123,9 @@ func setupTask(t *testing.T) *taskFixture {
 					},
 				},
 			)
+			return
+		case "/api/v4/projects/77/repository/branches":
+			JSON(w, 200, []Object{{"name": "master", "commit": Object{"id": f.head}}})
 			return
 		case "/internal/v1/session/check":
 			var b struct{ Session string }
@@ -232,7 +237,7 @@ func setupTask(t *testing.T) *taskFixture {
 	t.Cleanup(remote.Close)
 	a.Config.TenantURL = remote.URL
 	a.Config.RuntimeURL = remote.URL
-	a.GitLab.URL = remote.URL
+	setGitLab(t, a, remote.URL, "test-gitlab-token")
 	a.Workspaces = &testWorkspace{endpoint: workspace.Endpoint{URL: remote.URL, Token: "test"}}
 	raw, _ := json.Marshal(
 		CodingSettings{
@@ -682,7 +687,7 @@ func TestTaskGitLabLinkUsesPublishedResource(t *testing.T) {
 				)
 			}))
 			defer server.Close()
-			f.a.GitLab.URL = server.URL
+			setGitLab(t, f.a, server.URL, "test-gitlab-token")
 			status, out := f.call(
 				t,
 				f.operator,
@@ -911,3 +916,12 @@ func (w *testWorkspace) Pause(context.Context, string, string) error { w.pauses+
 func (w *testWorkspace) Resume(context.Context, string, string) error { w.resumes++; return nil }
 
 func (w *testWorkspace) Published(context.Context, string, string) error { w.published++; return nil }
+
+func setGitLab(t *testing.T, a *App, endpoint, token string) {
+	t.Helper()
+	g, err := gitlab.New(endpoint, token, "", a.HTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.GitLab = g
+}

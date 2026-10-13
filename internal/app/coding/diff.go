@@ -3,6 +3,7 @@ package coding
 import (
 	"errors"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
@@ -10,15 +11,7 @@ import (
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 )
 
-type TaskDiff struct {
-	MRIID        int64  `json:"mrIid"`
-	Base         string `json:"base"`
-	Head         string `json:"head"`
-	Start        string `json:"start"`
-	SourceBranch string `json:"sourceBranch"`
-	TargetBranch string `json:"targetBranch"`
-	Patch        string `json:"patch"`
-}
+type TaskDiff = codingv1.TaskDiff
 
 func (a *App) getTaskDiff(gc *gin.Context, u User) {
 	w, r := gc.Writer, gc.Request
@@ -63,8 +56,7 @@ func (a *App) getTaskDiff(gc *gin.Context, u User) {
 	}
 	patch, err := a.GitLab.RawMergeRequestDiff(r.Context(), project.GitLabID, t.MRIID)
 	if err != nil {
-		var dependency *gitlab.Error
-		if errors.As(err, &dependency) && dependency.Code == "RESPONSE_TOO_LARGE" {
+		if errors.Is(err, gitlab.ErrDiffTooLarge) {
 			fail(gc, problem(502, "GITLAB_DIFF_TOO_LARGE", "MR 差异超过页面读取上限，请打开 GitLab MR 查看"))
 			return
 		}

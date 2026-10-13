@@ -10,25 +10,14 @@ import (
 	"strings"
 	"time"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
 )
 
-type CodingSettings struct {
-	ReleaseID      string     `json:"releaseID,omitempty"`
-	AgentID        string     `json:"agentID"`
-	AgentVersion   int64      `json:"agentVersion"`
-	Version        int64      `json:"version"`
-	BaseBranch     string     `json:"baseBranch"`
-	Model          string     `json:"model"`
-	AllowedPaths   []string   `json:"allowedPaths"`
-	Checks         []string   `json:"checks"`
-	RepairLimit    int        `json:"repairLimit"`
-	TimeoutMinutes int        `json:"timeoutMinutes"`
-	CheckedAt      *time.Time `json:"checkedAt"`
-}
+type CodingSettings codingv1.Settings
 
 func (a *App) codingSettings(ctx context.Context, tid, pid string) (CodingSettings, error) {
 	var c CodingSettings

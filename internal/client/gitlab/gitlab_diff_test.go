@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,17 +30,20 @@ func TestRawMergeRequestDiffPreservesTextAndRejectsIncompleteResults(t *testing.
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			g := GitLab{URL: server.URL, Token: "fixture-token", HTTP: server.Client()}
+			g, err := New(server.URL, "fixture-token", "", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
 			patch, err := g.RawMergeRequestDiff(context.Background(), 17, 9)
 			if tc.want == "" {
 				if err != nil || patch != tc.body {
-					t.Fatal(patch, err)
+					t.Fatal("patch bytes", len(patch), err)
 				}
 				return
 			}
-			failure, ok := err.(*Error)
-			if !ok || failure.Code != tc.want || patch != "" {
-				t.Fatal(patch, err)
+			if patch != "" || (tc.status == 403 && !IsStatus(err, 403)) ||
+				(tc.status == 200 && !errors.Is(err, ErrDiffTooLarge)) {
+				t.Fatal("patch bytes", len(patch), err)
 			}
 		})
 	}

@@ -68,8 +68,7 @@ func TestTaskDiffReadsCurrentMRInsteadOfHistoricalRound(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	f.a.GitLab.URL = server.URL
-	f.a.GitLab.Token = "test-gitlab-token"
+	setGitLab(t, f.a, server.URL, "test-gitlab-token")
 	path := "/api/v1/tenants/t/projects/p/tasks/" + f.task.ID + "/diff"
 	code, out := f.call(t, f.member, "GET", path, nil, 0, "")
 	if code != 200 || out["patch"] != patch || out["head"] != head || out["base"] != base ||

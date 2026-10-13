@@ -26,7 +26,7 @@ func setupGitLabTask(t *testing.T) (*taskFixture, gitlab.MergeRequest, func(stri
 	}
 	f := setupTask(t)
 	f.gitlabProjectID = project
-	f.a.GitLab = &gitlab.GitLab{URL: base, Token: token, HTTP: &http.Client{}}
+	setGitLab(t, f.a, base, token)
 	f.a.Config.EnabledProjects[strconv.FormatInt(project, 10)] = true
 	endpoint := fmt.Sprintf("%s/api/v4/projects/%d", strings.TrimRight(base, "/"), project)
 	call := func(method, path string, body any, target any) {
@@ -38,7 +38,7 @@ func setupGitLabTask(t *testing.T) (*taskFixture, gitlab.MergeRequest, func(stri
 		}
 		req.Header.Set("PRIVATE-TOKEN", token)
 		req.Header.Set("Content-Type", "application/json")
-		res, e := f.a.GitLab.HTTP.Do(req)
+		res, e := f.a.HTTP.Do(req)
 		if e != nil {
 			t.Fatal("GitLab request failed", method, path)
 		}

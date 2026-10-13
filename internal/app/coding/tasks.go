@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/FlyTOmeLight/server-go/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -221,13 +222,7 @@ func (a *App) createTask(gc *gin.Context, u User) {
 		fail(gc, problem(403, "WRITE_REQUIRED", "需要项目代码写权限"))
 		return
 	}
-	var b struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Criteria    string `json:"criteria"`
-		MRIID       int64  `json:"mrIid"`
-		Synthetic   bool   `json:"synthetic"`
-	}
+	var b codingv1.AssociateTaskRequest
 	if e = readJSON(gc, &b); e != nil {
 		fail(gc, e)
 		return
@@ -312,14 +307,7 @@ func (a *App) taskAction(gc *gin.Context, u User) {
 		fail(gc, problem(403, "READ_REQUIRED", "需要项目读取权限"))
 		return
 	}
-	var b struct {
-		Action     string `json:"action"`
-		Version    int64  `json:"version"`
-		Head       string `json:"head"`
-		Text       string `json:"text"`
-		OwnerID    string `json:"ownerId"`
-		FeedbackID string `json:"feedbackId"`
-	}
+	var b codingv1.TaskActionRequest
 	if e = readJSON(gc, &b); e != nil {
 		fail(gc, e)
 		return

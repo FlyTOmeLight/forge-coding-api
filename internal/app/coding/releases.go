@@ -7,25 +7,14 @@ import (
 	"reflect"
 	"time"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
 )
 
-type CodingRelease struct {
-	ID                 string         `json:"id"`
-	ActorID            string         `json:"actorID"`
-	ActorName          string         `json:"actorName"`
-	Action             string         `json:"action"`
-	RestoredFrom       string         `json:"restoredFrom,omitempty"`
-	SourceAgentID      string         `json:"sourceAgentID,omitempty"`
-	SourceAgentVersion int64          `json:"sourceAgentVersion,omitempty"`
-	ExperimentID       string         `json:"experimentID,omitempty"`
-	SuiteDigest        string         `json:"suiteDigest,omitempty"`
-	Settings           CodingSettings `json:"settings"`
-	CreatedAt          time.Time      `json:"createdAt"`
-}
+type CodingRelease = codingv1.Release
 
 const releaseColumns = `id,actor_id,actor_name,action,restored_from,source_agent_id,source_agent_version,experiment_id,suite_digest,settings,created_at`
 
@@ -104,12 +93,7 @@ func (a *App) changeCodingRelease(gc *gin.Context, u User, restore bool) {
 		fail(gc, problem(403, "PROJECT_ADMIN_REQUIRED", "启用或回退需要项目管理员权限"))
 		return
 	}
-	var req struct {
-		SettingsVersion int64  `json:"settingsVersion"`
-		ExperimentID    string `json:"experimentID"`
-		AgentID         string `json:"agentID"`
-		AgentVersion    int64  `json:"agentVersion"`
-	}
+	var req codingv1.EnableReleaseRequest
 	if err := readJSON(gc, &req); err != nil {
 		fail(gc, err)
 		return
@@ -215,7 +199,7 @@ func (a *App) changeCodingRelease(gc *gin.Context, u User, restore bool) {
 			fail(gc, err)
 			return
 		}
-		next = target.Settings
+		next = CodingSettings(target.Settings)
 		release.Action, release.RestoredFrom, release.SourceAgentID, release.SourceAgentVersion, release.ExperimentID, release.SuiteDigest = "Restore", target.ID, target.SourceAgentID, target.SourceAgentVersion, target.ExperimentID, target.SuiteDigest
 	} else {
 		var approval struct {
@@ -302,7 +286,7 @@ func (a *App) changeCodingRelease(gc *gin.Context, u User, restore bool) {
 			ActorID:   u.ID,
 			ActorName: u.Name,
 			Action:    "Baseline",
-			Settings:  current,
+			Settings:  codingv1.Settings(current),
 		}
 		initial.Settings.ReleaseID = initial.ID
 		if _, err := insertRelease(r, tx, tid, pid, "baseline:"+initial.ID, "", initial); err != nil {
@@ -312,7 +296,7 @@ func (a *App) changeCodingRelease(gc *gin.Context, u User, restore bool) {
 	}
 	now := time.Now().UTC()
 	next.ReleaseID, next.Version, next.CheckedAt = release.ID, current.Version+1, &now
-	release.Settings = next
+	release.Settings = codingv1.Settings(next)
 	release, err = insertRelease(r, tx, tid, pid, key, hash, release)
 	if err != nil {
 		fail(gc, err)

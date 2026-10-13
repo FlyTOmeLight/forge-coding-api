@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	serrors "github.com/FlyTOmeLight/server-go/errors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -22,23 +23,11 @@ import (
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
 )
 
-type evaluationScope struct {
-	TenantID  string `json:"tenantID"`
-	ProjectID string `json:"projectID"`
-	ActorID   string `json:"actorID"`
-}
+type evaluationScope = codingv1.EvaluationScope
 
-type evaluationScenario struct {
-	BaseHead     string   `json:"baseHead"`
-	AllowedPaths []string `json:"allowedPaths"`
-	Checks       []string `json:"checks"`
-}
+type evaluationScenario = codingv1.EvaluationScenario
 
-type evaluationRequest struct {
-	Scope    evaluationScope    `json:"scope"`
-	Scenario evaluationScenario `json:"scenario"`
-	Phase    string             `json:"phase,omitempty"`
-}
+type evaluationRequest = codingv1.EvaluationEnvironmentRequest
 
 type evaluationEvidence struct {
 	Status   string   `json:"status"`
@@ -514,10 +503,7 @@ func (a *App) evaluationFinish(gc *gin.Context) {
 		fail(gc, err)
 		return
 	}
-	var finish struct {
-		Summary  string          `json:"summary"`
-		Judgment json.RawMessage `json:"judgment"`
-	}
+	var finish codingv1.EvaluationFinishRequest
 	if err = readJSON(gc, &finish); err != nil {
 		fail(gc, err)
 		return

@@ -11,7 +11,8 @@
 - `internal/service/`：Bootstrap 资源装配、HTTPHost 服务生命周期和独立 dispatcher。
 - `internal/table/`：pgx 数据库连接、迁移、任务模型与事务内持久化。
 - `internal/app/coding/`：任务业务、HTTP 接口、租户授权、执行提交和结果验证。
-- `internal/client/`：租户与运行时 HTTP 协议；`gitlab/` 封装仓库与 MR 协议。
+- `internal/client/`：租户与运行时 HTTP 协议；`gitlab/` 使用官方 Go SDK，保留业务类型与 Secret 轮换映射。
+- `sdk/go/codingv1/`：独立发布的公开 Go SDK，任务、配置、候选发布、评测和工具契约。
 - `internal/config/`、`conf/server/`：配置加载与配置样例。
 - `internal/workspace/`：任务级 AIO Pod/PVC、仓库准备、候选快照与受控 GitLab 推送。
 - `deploy/docker/`：服务镜像；镜像内自带 `/conf/server/config.toml`。
@@ -28,7 +29,7 @@ go build -o bin/coding ./cmd/server
 # 独立进程
 ./bin/coding dispatcher
 
-docker build -f deploy/docker/Dockerfile -t forge-coding-api:dev .
+docker build -f deploy/docker/Dockerfile --secret id=github_netrc,src=/path/to/github.netrc -t forge-coding-api:dev .
 helm upgrade --install forge-coding deploy/charts/forge-coding -n forge-tenant-split \
   --set image.repository=forge-coding-api,existingSecret=forge-coding-env,database.existingSecret=forge-coding-db
 ```
@@ -97,3 +98,12 @@ kubectl -n forge-tenant-split logs job/gitlab-credentials-check
 
 
 新建项目先保存基准分支、修改范围、检查和运行参数，再从通过的报告启用候选。普通配置保存不接受初始运行时 Agent 绑定。执行配置只返回当前绑定的 Agent 元数据，不返回其他项目的业务版本。没有旧绑定的项目首次启用不创建空白回退记录。
+
+
+## Go SDK 与 GitLab 接入
+
+公开模块 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1` 独立发布，版本 `v0.16.1`，要求 Go 1.24 或更新版本。安装与调用示例见 [SDK README](sdk/go/codingv1/README.md)。SDK 复用 server-go 的连接、context、超时与错误解码，支持项目会话、服务令牌、稳定幂等键和流式沙箱响应；服务端复用公开请求类型和领域数据。Agentic API 的 Coding 评测环境调用使用同一 SDK，保留其领域类型转换。
+
+GitLab 接入使用官方 `gitlab.com/gitlab-org/api/client-go v1.46.0`。分支、MR、评论、版本和 PAT 查询/创建/撤销由 SDK 处理。应用只保留业务类型转换、Draft 标题规则、按请求读取 Secret 和 4 MiB 原始 diff 上限。原始 diff 使用 SDK 的 Request/Do 与有上限的 writer，避免官方 byte-slice 方法读取整个无限制响应。写操作不自动重试；401/403 使用 SDK 错误，404 映射 SDK 的 `ErrNotFound`。凭据更新错误不回显令牌正文。
+
+SDK 位于私有仓库，下载需要当前账号具备该仓库的读取权限。设置 `GOPRIVATE=github.com/FlyTOmeLight/forge-coding-api`，使用 GitHub HTTPS 凭据；SDK tag 为 `sdk/go/codingv1/v0.16.1`。镜像构建通过 BuildKit 的 `github_netrc` secret 挂载 netrc（`machine github.com`、`login x-access-token`、`password <token>`），构建阶段只用于获取发布依赖，不进入源码、镜像层或最终容器。`make image GITHUB_NETRC=/path/to/github.netrc` 使用同一方式。

@@ -1,3 +1,13 @@
+## 2026-10-13 GitLab 官方 SDK 与 Coding Go SDK
+
+GitLab 分支、MR、评论、版本和 PAT 接入改用官方 `client-go v1.46.0`，删除自定义 HTTP 请求与通用响应解析。业务只保留类型转换、按请求读取 Secret、Draft 规则及 4 MiB 原始 diff 上限；404 映射 SDK 的 ErrNotFound，写操作不自动重试，PAT 错误不回显令牌。
+
+新增独立模块 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1 v0.16.1`，最低 Go 1.24。后端与 Agentic API 正式引用发布版本，关闭 workspace、没有本地 replace。SDK 复用 server-go 传输，覆盖所有业务及内部工具路由，支持请求 context、两种实际错误格式、幂等键、独立会话身份和沙箱流的读取与关闭。公开请求类型和领域数据与 Controller、Table 共享。
+
+SDK 自身的竞态/传输测试通过；后端通过 SDK 调用真实 Controller 与隔离 PostgreSQL，验证任务创建/重试、项目隔离及内部服务鉴权。后端全量竞态、vet、两个入口构建，Agentic API 的隔离 PostgreSQL/Redis 全量竞态、vet 和两个入口构建均通过。正式版本依赖完成两份 Docker 镜像构建；私有模块凭据使用 BuildKit secret，未写入源码或镜像。GitLab 分页、取消、禁止写重试、Secret 热更新和 diff 限额回归通过；真实 MR 写入验收未执行。
+
+发布后 Coding API、dispatcher 和接入 SDK 的 Agentic API 均 Ready；健康、数据库就绪接口返回 200，官方 GitLab SDK 成功读取线上 PAT 元数据。发布镜像为 `forge-coding-api:0.16.1-go-sdks` 和 `agentic-kit-api:0.16.1-coding-sdk`。
+
 ## 2026-10-13 server-go 重构与发版
 
 Coding API 与独立 dispatcher 迁移到正式依赖 server-go v0.3.1，按 `cmd/server`、`internal/service`、`internal/app/coding`、`internal/table`、`internal/client`、`conf/server` 与 `deploy` 组织。Bootstrap 显式管理资源，HTTPHost 先排空请求再停止服务；dispatcher 取消后等待所属后台任务结束。业务错误 envelope 和现有路由保留，JSON 通过框架绑定并拒绝未知字段、多文档；64 KiB 上限返回 413。

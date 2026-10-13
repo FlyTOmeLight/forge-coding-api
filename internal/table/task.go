@@ -3,45 +3,12 @@ package table
 import (
 	"context"
 	"encoding/json"
-	"time"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/jackc/pgx/v5"
 )
 
-// Task keeps code ownership separate from task responsibility and review.
-type Task struct {
-	AgentJudgment   json.RawMessage `json:"agentJudgment"`
-	BaseBranch      string          `json:"baseBranch"`
-	Reproduce       string          `json:"reproduce"`
-	Constraints     string          `json:"constraints"`
-	Reference       string          `json:"reference"`
-	ID              string          `json:"id"`
-	TenantID        string          `json:"tenantId"`
-	ProjectID       string          `json:"projectId"`
-	OwnerID         string          `json:"ownerId"`
-	Title           string          `json:"title"`
-	Description     string          `json:"description"`
-	Criteria        string          `json:"criteria"`
-	Branch          string          `json:"branch"`
-	TargetBranch    string          `json:"targetBranch"`
-	MRIID           int64           `json:"mrIid"`
-	Head            string          `json:"head"`
-	Status          string          `json:"status"`
-	Control         string          `json:"control"`
-	Version         int64           `json:"version"`
-	Epoch           int64           `json:"epoch"`
-	Round           int             `json:"round"`
-	Checks          string          `json:"checks"`
-	CheckedHead     string          `json:"checkedHead"`
-	ApprovalHead    string          `json:"approvalHead"`
-	ReviewerIDs     []string        `json:"reviewerIds"`
-	ActiveRun       *string         `json:"activeRun"`
-	StopRequestedAt *time.Time      `json:"stopRequestedAt"`
-	StopConfirmed   bool            `json:"stopConfirmed"`
-	Discussions     json.RawMessage `json:"discussions"`
-	Synthetic       bool            `json:"synthetic"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
-}
+type Task codingv1.Task
 
 const TaskColumns = `id,tenant_id,project_id,owner_id,title,description,criteria,branch,target_branch,mr_iid,head,status,control,version,epoch,round,checks,checked_head,approval_head,reviewer_ids,active_run,stop_requested_at,stop_confirmed,discussions,synthetic,updated_at,base_branch,reproduce,constraints,reference,agent_judgment`
 

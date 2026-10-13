@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -238,26 +237,12 @@ func (r *runner) maintain(ctx context.Context) error {
 	if err = r.drain(ctx); err != nil {
 		return err
 	}
-	var previous token
-	if err = r.api(
-		ctx,
-		saved.Next.Value,
-		"GET",
-		fmt.Sprintf("/personal_access_tokens/%d", saved.Previous.ID),
-		nil,
-		&previous,
-	); err != nil {
+	previous, err := r.token(ctx, saved.Next.Value, saved.Previous.ID)
+	if err != nil {
 		return err
 	}
 	if !previous.Revoked {
-		if err = r.api(
-			ctx,
-			saved.Next.Value,
-			"DELETE",
-			fmt.Sprintf("/personal_access_tokens/%d", previous.ID),
-			nil,
-			nil,
-		); err != nil {
+		if err := r.revoke(ctx, saved.Next.Value, previous.ID); err != nil {
 			return err
 		}
 	}

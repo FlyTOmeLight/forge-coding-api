@@ -2,50 +2,71 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
+
+	sdk "gitlab.com/gitlab-org/api/client-go"
 )
 
 type GitLab struct {
-	URL, Token, TokenFile string
-	HTTP                  *http.Client
+	client           *sdk.Client
+	token, tokenFile string
 }
 
-func (g *GitLab) call(ctx context.Context, method, path string, body, target any) error {
+func New(endpoint, token, tokenFile string, h *http.Client) (*GitLab, error) {
+	c, err := sdk.NewClient(
+		"",
+		sdk.WithBaseURL(endpoint),
+		sdk.WithHTTPClient(h),
+		sdk.WithoutRetries(),
+		sdk.WithCustomLogger(nil),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &GitLab{client: c, token: token, tokenFile: tokenFile}, nil
+}
+
+// Credential reads each Secret revision without changing shared SDK authentication.
+func (g *GitLab) Credential() (string, error) {
+	if g.tokenFile == "" {
+		return g.token, nil
+	}
+	raw, err := os.ReadFile(g.tokenFile)
+	if err != nil || strings.TrimSpace(string(raw)) == "" {
+		return "", errors.New("GitLab credential unavailable")
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (g *GitLab) options(ctx context.Context) ([]sdk.RequestOptionFunc, error) {
 	token, err := g.Credential()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return request(
-		ctx,
-		g.HTTP,
-		"gitlab",
-		method,
-		g.URL+"/api/v4"+path,
-		body,
-		http.Header{"PRIVATE-TOKEN": []string{token}},
-		target,
-	)
+	return []sdk.RequestOptionFunc{sdk.WithContext(ctx), sdk.WithToken(sdk.PrivateToken, token)}, nil
+}
+
+func IsStatus(err error, status int) bool {
+	if status == http.StatusNotFound && errors.Is(err, sdk.ErrNotFound) {
+		return true
+	}
+	var response *sdk.ErrorResponse
+	return errors.As(err, &response) && response.Response != nil && response.Response.StatusCode == status
 }
 
 func (g *GitLab) Version(ctx context.Context) (map[string]any, error) {
-	var v map[string]any
-	e := g.call(ctx, "GET", "/version", nil, &v)
-	return v, e
-}
-
-// Credential reads the projected Secret on each operation. Kubernetes replaces
-// its symlink atomically; configured files never fall back to stale env values.
-func (g *GitLab) Credential() (string, error) {
-	if g.TokenFile == "" {
-		return g.Token, nil
+	opts, err := g.options(ctx)
+	if err != nil {
+		return nil, err
 	}
-	raw, err := os.ReadFile(g.TokenFile)
-	if err != nil || strings.TrimSpace(string(raw)) == "" {
-		return "", &Error{Service: "gitlab", Code: "CREDENTIAL_UNAVAILABLE"}
+	version, _, err := g.client.Version.GetVersion(opts...)
+	if err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(string(raw)), nil
+	return map[string]any{"version": version.Version, "revision": version.Revision}, nil
 }
 
 type GitLabCredential struct {
@@ -58,7 +79,23 @@ type GitLabCredential struct {
 }
 
 func (g *GitLab) CredentialStatus(ctx context.Context) (GitLabCredential, error) {
-	var status GitLabCredential
-	err := g.call(ctx, "GET", "/personal_access_tokens/self", nil, &status)
-	return status, err
+	opts, err := g.options(ctx)
+	if err != nil {
+		return GitLabCredential{}, err
+	}
+	token, _, err := g.client.PersonalAccessTokens.GetSinglePersonalAccessToken(opts...)
+	if err != nil {
+		return GitLabCredential{}, err
+	}
+	status := GitLabCredential{
+		ID:      token.ID,
+		UserID:  token.UserID,
+		Name:    token.Name,
+		Scopes:  token.Scopes,
+		Revoked: token.Revoked,
+	}
+	if token.ExpiresAt != nil {
+		status.ExpiresAt = token.ExpiresAt.String()
+	}
+	return status, nil
 }

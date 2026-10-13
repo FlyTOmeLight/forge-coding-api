@@ -117,7 +117,7 @@ func TestGitLabSyncFailureDoesNotBlockOtherTasksAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstream := f.a.GitLab.URL
+	upstream := f.a.GitLab
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v4/projects/77/merge_requests/1":
@@ -129,7 +129,7 @@ func TestGitLabSyncFailureDoesNotBlockOtherTasksAndRetries(t *testing.T) {
 		}
 	}))
 	defer remote.Close()
-	f.a.GitLab.URL = remote.URL
+	setGitLab(t, f.a, remote.URL, "test-gitlab-token")
 	if err := f.a.reconcileGitLabTasks(f.ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestGitLabSyncFailureDoesNotBlockOtherTasksAndRetries(t *testing.T) {
 	if original != "Review" || other != "Completed" {
 		t.Fatal(original, other)
 	}
-	f.a.GitLab.URL = upstream
+	f.a.GitLab = upstream
 	f.mrState = "merged"
 	if err := f.a.reconcileGitLabTasks(f.ctx); err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestGitLabSyncCommentsAreIdempotent(t *testing.T) {
 		JSON(w, 200, Object{"iid": 1, "state": "opened", "sha": f.head})
 	}))
 	defer upstream.Close()
-	f.a.GitLab.URL = upstream.URL
+	setGitLab(t, f.a, upstream.URL, "test-gitlab-token")
 	if err := f.a.reconcileGitLabTasks(f.ctx); err != nil {
 		t.Fatal(err)
 	}

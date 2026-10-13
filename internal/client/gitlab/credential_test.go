@@ -23,22 +23,24 @@ func TestGitLabLoadsProjectedCredentialWithoutRestart(t *testing.T) {
 		w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
-	g := GitLab{URL: server.URL, Token: "stale-startup-token", TokenFile: current, HTTP: server.Client()}
-	var target map[string]any
-	if err := g.call(context.Background(), "GET", "/user", nil, &target); err != nil {
+	g, err := New(server.URL, "stale-startup-token", current, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Version(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	next := filepath.Join(root, "next")
 	os.Symlink(second, next)
 	os.Rename(next, current)
-	if err := g.call(context.Background(), "GET", "/user", nil, &target); err != nil {
+	if _, err := g.Version(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0] != "first-token" || got[1] != "second-token" {
 		t.Fatal(got)
 	}
 	os.Remove(current)
-	if err := g.call(context.Background(), "GET", "/user", nil, &target); err == nil {
+	if _, err := g.Version(context.Background()); err == nil {
 		t.Fatal("missing Secret fell back to stale credential")
 	}
 	if len(got) != 2 {

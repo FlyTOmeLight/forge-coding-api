@@ -11,13 +11,14 @@ import (
 	"strconv"
 	"strings"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
 )
 
-type sandboxScope struct{ TenantID, ProjectID, ActorID, TaskID, RoundID string }
+type sandboxScope = codingv1.ToolScope
 
 func (a *App) sandboxIdentity(r *http.Request) (table.Task, taskRunRequest, error) {
 	var scope sandboxScope
@@ -159,13 +160,7 @@ func (a *App) submitFinish(gc *gin.Context) {
 		fail(gc, err)
 		return
 	}
-	var body struct {
-		Summary  string `json:"summary"`
-		Judgment struct {
-			Status  string `json:"status"`
-			Summary string `json:"summary"`
-		} `json:"judgment"`
-	}
+	var body codingv1.FinishRequest
 	if err = readJSON(gc, &body); err != nil {
 		fail(gc, err)
 		return

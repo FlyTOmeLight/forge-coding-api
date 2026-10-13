@@ -5,31 +5,14 @@ import (
 	"net/url"
 	"strconv"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
 )
 
-type RuntimeTrace struct {
-	Run *struct {
-		RuntimeRun
-		Scope *struct {
-			TenantID  string `json:"tenantID"`
-			ProjectID string `json:"projectID"`
-			TaskID    string `json:"taskID"`
-			RoundID   string `json:"roundID"`
-		} `json:"scope"`
-		WaitingStep string `json:"waitingStep,omitempty"`
-		EventSeq    int64  `json:"eventSeq"`
-		Deadline    string `json:"deadline"`
-		Attempt     int    `json:"attempt"`
-	} `json:"run"`
-	Events      []json.RawMessage `json:"events"`
-	LatestEvent json.RawMessage   `json:"latestEvent,omitempty"`
-	NextSeq     int64             `json:"nextSeq"`
-	HasMore     bool              `json:"hasMore"`
-}
+type RuntimeTrace = codingv1.RuntimeTrace
 
 func (a *App) getRunTrace(gc *gin.Context, u User) {
 	w, r := gc.Writer, gc.Request

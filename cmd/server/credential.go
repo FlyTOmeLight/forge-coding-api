@@ -15,11 +15,11 @@ import (
 func credentialStatus() error {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	g := gitlab.GitLab{
-		URL:       os.Getenv("GITLAB_URL"),
-		Token:     os.Getenv("GITLAB_TOKEN"),
-		TokenFile: os.Getenv("GITLAB_TOKEN_FILE"),
-		HTTP:      &http.Client{Transport: transport, Timeout: 15 * time.Second},
+	h := &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	defer h.CloseIdleConnections()
+	g, err := gitlab.New(os.Getenv("GITLAB_URL"), os.Getenv("GITLAB_TOKEN"), os.Getenv("GITLAB_TOKEN_FILE"), h)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

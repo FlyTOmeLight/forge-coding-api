@@ -11,6 +11,7 @@ import (
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/app/coding"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
@@ -43,7 +44,13 @@ func (s *Coding) Initialize(ctx context.Context) error {
 			return err
 		}
 	}
-	s.app = coding.New(s.cfg, db, h, ws)
+	g, err := gitlab.New(s.cfg.GitLabURL, s.cfg.GitLabToken, s.cfg.GitLabTokenFile, h)
+	if err != nil {
+		h.CloseIdleConnections()
+		db.Close()
+		return err
+	}
+	s.app = coding.New(s.cfg, db, h, ws, g)
 	return nil
 }
 

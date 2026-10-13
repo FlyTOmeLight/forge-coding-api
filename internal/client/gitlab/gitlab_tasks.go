@@ -1,11 +1,16 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"net/url"
+	"net/http"
 	"regexp"
 	"strings"
+
+	sdk "gitlab.com/gitlab-org/api/client-go"
 )
 
 // DiffRefs identifies the commits used for a GitLab MR diff.
@@ -28,40 +33,63 @@ type MergeRequest struct {
 	DiffRefs DiffRefs `json:"diff_refs"`
 }
 
-func (g *GitLab) MergeRequest(ctx context.Context, project, iid int64) (MergeRequest, error) {
-	var mr MergeRequest
-	e := g.call(ctx, "GET", fmt.Sprintf("/projects/%d/merge_requests/%d", project, iid), nil, &mr)
-	return mr, e
+func mergeRequestValue(m *sdk.MergeRequest) MergeRequest {
+	value := MergeRequest{
+		IID:    m.IID,
+		Title:  m.Title,
+		State:  m.State,
+		Head:   m.SHA,
+		Source: m.SourceBranch,
+		Target: m.TargetBranch,
+		URL:    m.WebURL,
+		Draft:  m.Draft,
+	}
+	value.DiffRefs = DiffRefs{Base: m.DiffRefs.BaseSha, Head: m.DiffRefs.HeadSha, Start: m.DiffRefs.StartSha}
+	return value
 }
 
-// MRDiscussions retains the complete position, commit and discussion context.
+func (g *GitLab) MergeRequest(ctx context.Context, project, iid int64) (MergeRequest, error) {
+	opts, err := g.options(ctx)
+	if err != nil {
+		return MergeRequest{}, err
+	}
+	mr, _, err := g.client.MergeRequests.GetMergeRequest(project, iid, nil, opts...)
+	if err != nil {
+		return MergeRequest{}, err
+	}
+	return mergeRequestValue(mr), nil
+}
+
 func (g *GitLab) MRDiscussions(ctx context.Context, project, iid int64) ([]map[string]any, error) {
+	opts, err := g.options(ctx)
+	if err != nil {
+		return nil, err
+	}
 	all := []map[string]any{}
-	for page := 1; ; page++ {
-		var batch []map[string]any
-		e := g.call(
-			ctx,
-			"GET",
-			fmt.Sprintf(
-				"/projects/%d/merge_requests/%d/discussions?per_page=100&page=%d",
-				project,
-				iid,
-				page,
-			),
-			nil,
-			&batch,
-		)
-		if e != nil {
-			return nil, e
+	list := &sdk.ListMergeRequestDiscussionsOptions{ListOptions: sdk.ListOptions{PerPage: 100, Page: 1}}
+	for {
+		batch, response, err := g.client.Discussions.ListMergeRequestDiscussions(project, iid, list, opts...)
+		if err != nil {
+			return nil, err
 		}
-		all = append(all, batch...)
-		if len(batch) < 100 {
+		for _, item := range batch {
+			raw, err := json.Marshal(item)
+			if err != nil {
+				return nil, err
+			}
+			var value map[string]any
+			if err = json.Unmarshal(raw, &value); err != nil {
+				return nil, err
+			}
+			all = append(all, value)
+		}
+		if response.NextPage == 0 {
 			return all, nil
 		}
+		list.Page = response.NextPage
 	}
 }
 
-// GitLab's REST API changes draft status through the title prefix.
 var draftPrefix = regexp.MustCompile(`(?i)^(?:(?:draft|wip):\s*|\[(?:draft|wip)\]\s*|\((?:draft|wip)\)\s*)+`)
 
 func (g *GitLab) SetMergeRequestDraft(
@@ -70,42 +98,89 @@ func (g *GitLab) SetMergeRequestDraft(
 	mr MergeRequest,
 	draft bool,
 ) (MergeRequest, error) {
+	opts, err := g.options(ctx)
+	if err != nil {
+		return MergeRequest{}, err
+	}
 	title := strings.TrimSpace(draftPrefix.ReplaceAllString(mr.Title, ""))
 	if draft {
 		title = "Draft: " + title
 	}
-	var updated MergeRequest
-	err := g.call(
-		ctx,
-		"PUT",
-		fmt.Sprintf("/projects/%d/merge_requests/%d", project, mr.IID),
-		map[string]any{"title": title},
-		&updated,
-	)
-	return updated, err
+	updated, _, err := g.client.MergeRequests.UpdateMergeRequest(
+		project,
+		mr.IID,
+		&sdk.UpdateMergeRequestOptions{Title: &title},
+		opts...)
+	if err != nil {
+		return MergeRequest{}, err
+	}
+	return mergeRequestValue(updated), nil
 }
 
-// RawMergeRequestDiff retains GitLab's complete unified patch, including file headers.
+var ErrDiffTooLarge = errors.New("GitLab diff exceeds 4 MiB")
+
+type diffBuffer struct{ buffer bytes.Buffer }
+
+func (b *diffBuffer) Write(p []byte) (int, error) {
+	if b.buffer.Len()+len(p) > 4<<20 {
+		return 0, ErrDiffTooLarge
+	}
+	return b.buffer.Write(p)
+}
+
+// The SDK's byte-slice method buffers an unbounded body. Use its request and
+// response machinery with a bounded writer for the existing 4 MiB diff contract.
 func (g *GitLab) RawMergeRequestDiff(ctx context.Context, project, iid int64) (string, error) {
-	var patch string
-	err := g.call(ctx, "GET", fmt.Sprintf("/projects/%d/merge_requests/%d/raw_diffs", project, iid), nil, &patch)
-	return patch, err
+	opts, err := g.options(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := g.client.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("projects/%d/merge_requests/%d/raw_diffs", project, iid),
+		nil,
+		opts,
+	)
+	if err != nil {
+		return "", err
+	}
+	var patch diffBuffer
+	if _, err = g.client.Do(req, &patch); err != nil {
+		return "", err
+	}
+	return patch.buffer.String(), nil
 }
 
 func (g *GitLab) SourceMergeRequests(ctx context.Context, project int64, branch string) ([]MergeRequest, error) {
-	var result []MergeRequest
-	err := g.call(
-		ctx,
-		"GET",
-		fmt.Sprintf(
-			"/projects/%d/merge_requests?state=opened&source_branch=%s",
-			project,
-			url.QueryEscape(branch),
-		),
-		nil,
-		&result,
-	)
-	return result, err
+	opts, err := g.options(ctx)
+	if err != nil {
+		return nil, err
+	}
+	state := "opened"
+	batch, _, err := g.client.MergeRequests.ListProjectMergeRequests(
+		project,
+		&sdk.ListProjectMergeRequestsOptions{State: &state, SourceBranch: &branch},
+		opts...)
+	if err != nil {
+		return nil, err
+	}
+	result := []MergeRequest{}
+	for _, mr := range batch {
+		result = append(
+			result,
+			MergeRequest{
+				IID:    mr.IID,
+				Title:  mr.Title,
+				State:  mr.State,
+				Head:   mr.SHA,
+				Source: mr.SourceBranch,
+				Target: mr.TargetBranch,
+				URL:    mr.WebURL,
+				Draft:  mr.Draft,
+			},
+		)
+	}
+	return result, nil
 }
 
 func (g *GitLab) CreateDraftMergeRequest(
@@ -113,18 +188,22 @@ func (g *GitLab) CreateDraftMergeRequest(
 	project int64,
 	source, target, title, summary string,
 ) (MergeRequest, error) {
-	var result MergeRequest
-	err := g.call(
-		ctx,
-		"POST",
-		fmt.Sprintf("/projects/%d/merge_requests", project),
-		map[string]any{
-			"source_branch": source,
-			"target_branch": target,
-			"title":         "Draft: " + title,
-			"description":   summary,
+	opts, err := g.options(ctx)
+	if err != nil {
+		return MergeRequest{}, err
+	}
+	title = "Draft: " + title
+	mr, _, err := g.client.MergeRequests.CreateMergeRequest(
+		project,
+		&sdk.CreateMergeRequestOptions{
+			SourceBranch: &source,
+			TargetBranch: &target,
+			Title:        &title,
+			Description:  &summary,
 		},
-		&result,
-	)
-	return result, err
+		opts...)
+	if err != nil {
+		return MergeRequest{}, err
+	}
+	return mergeRequestValue(mr), nil
 }

@@ -35,18 +35,13 @@ type App struct {
 }
 
 // New borrows resources owned by service.Coding.
-func New(c config.Config, db *pgxpool.Pool, h *http.Client, workspaces Workspace) *App {
+func New(c config.Config, db *pgxpool.Pool, h *http.Client, workspaces Workspace, g *gitlab.GitLab) *App {
 	return &App{
 		DB:         db,
 		Config:     c,
 		HTTP:       h,
 		Workspaces: workspaces,
-		GitLab: &gitlab.GitLab{
-			URL:       c.GitLabURL,
-			Token:     c.GitLabToken,
-			TokenFile: c.GitLabTokenFile,
-			HTTP:      h,
-		},
+		GitLab:     g,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
@@ -86,17 +87,7 @@ func (a *App) createProblemTask(gc *gin.Context, u User) {
 		fail(gc, problem(403, "WRITE_REQUIRED", "需要项目代码写权限"))
 		return
 	}
-	var b struct {
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		Reproduce   string   `json:"reproduce"`
-		Criteria    string   `json:"criteria"`
-		Constraints string   `json:"constraints"`
-		Reference   string   `json:"reference"`
-		BaseBranch  string   `json:"baseBranch"`
-		ReviewerIDs []string `json:"reviewerIds"`
-		Synthetic   bool     `json:"synthetic"`
-	}
+	var b codingv1.CreateTaskRequest
 	if e = readJSON(gc, &b); e != nil {
 		fail(gc, e)
 		return
