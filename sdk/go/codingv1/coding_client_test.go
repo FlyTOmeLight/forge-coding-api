@@ -477,7 +477,12 @@ func TestSDKDoesNotRetryMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	_, err = client.CreateTask(context.Background(), ProjectScope{TenantID: "t", ProjectID: "p"}, "stable-key", &CreateTaskRequest{Title: "fix"})
+	_, err = client.CreateTask(
+		context.Background(),
+		ProjectScope{TenantID: "t", ProjectID: "p"},
+		"stable-key",
+		&CreateTaskRequest{Title: "fix"},
+	)
 	var detail *serrors.Error
 	if !errors.As(err, &detail) || detail.Code != "UNAVAILABLE" || detail.Status != http.StatusServiceUnavailable {
 		t.Fatalf("mutation failure lost: %v", err)
