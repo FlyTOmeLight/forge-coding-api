@@ -4,13 +4,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/FlyTOmeLight/forge-coding-api/internal/coding"
-	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
-	"github.com/jackc/pgx/v5"
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 )
 
 func main() {
@@ -19,20 +21,21 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	source, e := pgx.Connect(ctx, os.Getenv("SOURCE_DATABASE_URL"))
 	if e != nil {
-		return fmt.Errorf("connect source database")
+		return errors.New("connect source database")
 	}
 	defer source.Close(ctx)
-	a, e := coding.New(ctx, config.Config{DatabaseURL: os.Getenv("DATABASE_URL")})
+	db, e := table.Open(ctx, os.Getenv("DATABASE_URL"))
 	if e != nil {
 		return e
 	}
-	defer a.DB.Close()
-	if e = a.Migrate(ctx); e != nil {
+	defer db.Close()
+	if e = table.Migrate(ctx, db); e != nil {
 		return e
 	}
 	from, e := source.Begin(ctx)
@@ -40,7 +43,7 @@ func run() error {
 		return e
 	}
 	defer from.Rollback(ctx)
-	to, e := a.DB.Begin(ctx)
+	to, e := db.Begin(ctx)
 	if e != nil {
 		return e
 	}
@@ -52,7 +55,8 @@ func run() error {
 		}
 	}
 	var active int
-	if e = from.QueryRow(ctx, `SELECT count(*) FROM coding_runs WHERE status IN ('Queued','Running')`).Scan(&active); e != nil {
+	if e = from.QueryRow(ctx, `SELECT count(*) FROM coding_runs WHERE status IN ('Queued','Running')`).
+		Scan(&active); e != nil {
 		return e
 	}
 	if active > 0 {
@@ -83,7 +87,10 @@ func run() error {
 		}
 		counts[table] = copied
 	}
-	if _, e = to.Exec(ctx, `SELECT setval(pg_get_serial_sequence('coding_events','id'),coalesce((SELECT max(id) FROM coding_events),1),EXISTS(SELECT 1 FROM coding_events))`); e != nil {
+	if _, e = to.Exec(
+		ctx,
+		`SELECT setval(pg_get_serial_sequence('coding_events','id'),coalesce((SELECT max(id) FROM coding_events),1),EXISTS(SELECT 1 FROM coding_events))`,
+	); e != nil {
 		return e
 	}
 	if e = to.Commit(ctx); e != nil {

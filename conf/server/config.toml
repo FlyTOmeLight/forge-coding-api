@@ -1,0 +1,27 @@
+AppName = "forge-coding-api"
+AppCode = 103
+RunMode = "release"
+
+[HTTPServer]
+Listen = "${env:LISTEN_ADDR::8080}"
+ReadTimeout = 30000
+WriteTimeout = 35000
+IdleTimeout = 60000
+
+[Coding]
+DatabaseURL = "${env:DATABASE_URL:}"
+PublicURL = "${env:PUBLIC_URL:}"
+TenantURL = "${env:TENANT_URL:}"
+TenantToken = "${env:TENANT_TOKEN:}"
+ServiceToken = "${env:SERVICE_TOKEN:}"
+RuntimeURL = "${env:RUNTIME_URL:}"
+RuntimeToken = "${env:RUNTIME_TOKEN:}"
+ProjectsJSON = "${env:CODING_PROJECTS_JSON:}"
+WorkspaceNamespace = "${env:WORKSPACE_NAMESPACE:}"
+SandboxGatewayURL = "${env:SANDBOX_GATEWAY_URL:}"
+WorkspaceJobImage = "${env:WORKSPACE_JOB_IMAGE:}"
+GitLabURL = "${env:GITLAB_URL:}"
+GitLabPublicURL = "${env:GITLAB_PUBLIC_URL:}"
+GitLabToken = "${env:GITLAB_TOKEN:}"
+GitLabTokenFile = "${env:GITLAB_TOKEN_FILE:}"
+ModelURL = "${env:MODEL_URL:}"

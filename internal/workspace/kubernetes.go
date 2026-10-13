@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +29,9 @@ type Manager struct {
 	config      *rest.Config
 	execCommand func(context.Context, string, []string) error
 }
+
 type Repository struct{ URL, Head, Branch, Token, PermitToken string }
+
 type Endpoint struct{ URL, Token string }
 
 func New(namespace, taskImage string) (*Manager, error) {
@@ -45,12 +46,17 @@ func New(namespace, taskImage string) (*Manager, error) {
 	}
 	return &Manager{kube: kube, namespace: namespace, taskImage: taskImage, config: config}, nil
 }
-func name(round string) string              { return "aio-" + strings.ReplaceAll(round, "_", "-") }
-func pointer[T any](v T) *T                 { return &v }
+
+func name(round string) string { return "aio-" + strings.ReplaceAll(round, "_", "-") }
+
+func pointer[T any](v T) *T { return &v }
+
 func labels(round string) map[string]string { return map[string]string{"forge-round": round} }
+
 func taskLabels(task, round string) map[string]string {
 	return map[string]string{"app": "coding-aio", "forge-task": task, "forge-round": round}
 }
+
 func (m *Manager) Ensure(ctx context.Context, task, round string, repository Repository) (Endpoint, error) {
 	n := name(task)
 	ns := m.namespace
@@ -60,12 +66,22 @@ func (m *Manager) Ensure(ctx context.Context, task, round string, repository Rep
 		if _, err = rand.Read(raw[:]); err != nil {
 			return Endpoint{}, err
 		}
-		secret, err = m.kube.CoreV1().Secrets(ns).Create(ctx, &core.Secret{ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)}, Data: map[string][]byte{"aio-token": []byte(hex.EncodeToString(raw[:])), "git-token": []byte(repository.Token), "coding-token": []byte(repository.PermitToken)}}, meta.CreateOptions{})
+		secret, err = m.kube.CoreV1().
+			Secrets(ns).
+			Create(ctx, &core.Secret{ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)}, Data: map[string][]byte{"aio-token": []byte(hex.EncodeToString(raw[:])), "git-token": []byte(repository.Token), "coding-token": []byte(repository.PermitToken)}}, meta.CreateOptions{})
 	}
 	if err != nil {
 		return Endpoint{}, err
 	}
-	pvc := &core.PersistentVolumeClaim{ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)}, Spec: core.PersistentVolumeClaimSpec{AccessModes: []core.PersistentVolumeAccessMode{core.ReadWriteOnce}, Resources: core.VolumeResourceRequirements{Requests: core.ResourceList{core.ResourceStorage: resource.MustParse("2Gi")}}}}
+	pvc := &core.PersistentVolumeClaim{
+		ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)},
+		Spec: core.PersistentVolumeClaimSpec{
+			AccessModes: []core.PersistentVolumeAccessMode{core.ReadWriteOnce},
+			Resources: core.VolumeResourceRequirements{
+				Requests: core.ResourceList{core.ResourceStorage: resource.MustParse("2Gi")},
+			},
+		},
+	}
 	pvc, err = m.kube.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, meta.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		pvc, err = m.kube.CoreV1().PersistentVolumeClaims(ns).Get(ctx, n, meta.GetOptions{})
@@ -73,15 +89,126 @@ func (m *Manager) Ensure(ctx context.Context, task, round string, repository Rep
 	if err != nil {
 		return Endpoint{}, err
 	}
-	service := &core.Service{ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)}, Spec: core.ServiceSpec{Selector: map[string]string{"app": "coding-aio", "forge-task": task}, Ports: []core.ServicePort{{Port: 8080}}}}
-	if _, err = m.kube.CoreV1().Services(ns).Create(ctx, service, meta.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+	service := &core.Service{
+		ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round)},
+		Spec: core.ServiceSpec{
+			Selector: map[string]string{"app": "coding-aio", "forge-task": task},
+			Ports:    []core.ServicePort{{Port: 8080}},
+		},
+	}
+	if _, err = m.kube.CoreV1().
+		Services(ns).
+		Create(ctx, service, meta.CreateOptions{}); err != nil &&
+		!apierrors.IsAlreadyExists(err) {
 		return Endpoint{}, err
 	}
 	pod, err := m.kube.CoreV1().Pods(ns).Get(ctx, n, meta.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		env := []core.EnvVar{{Name: "WORKSPACE", Value: "/workspace"}, {Name: "SANDBOX_API_KEY", ValueFrom: &core.EnvVarSource{SecretKeyRef: &core.SecretKeySelector{LocalObjectReference: core.LocalObjectReference{Name: n}, Key: "aio-token"}}}}
-		prepare := core.Container{Name: "prepare", Image: Image, Command: []string{"sh", "-eu", "-c", prepareScript}, Env: []core.EnvVar{{Name: "REUSE_WORKTREE", Value: strconv.FormatBool(pvc.Annotations["forge-prepared-head"] == repository.Head)}, {Name: "REPOSITORY_URL", Value: repository.URL}, {Name: "BASE_HEAD", Value: repository.Head}, {Name: "WORK_BRANCH", Value: repository.Branch}, {Name: "GITLAB_TOKEN", ValueFrom: &core.EnvVarSource{SecretKeyRef: &core.SecretKeySelector{LocalObjectReference: core.LocalObjectReference{Name: n}, Key: "git-token"}}}}, VolumeMounts: []core.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}, SecurityContext: &core.SecurityContext{RunAsUser: pointer(int64(1000)), RunAsGroup: pointer(int64(1000))}}
-		pod = &core.Pod{ObjectMeta: meta.ObjectMeta{Name: n, Labels: taskLabels(task, round), Annotations: map[string]string{"forge-workspace-head": repository.Head}}, Spec: core.PodSpec{AutomountServiceAccountToken: pointer(false), RestartPolicy: core.RestartPolicyNever, SecurityContext: &core.PodSecurityContext{FSGroup: pointer(int64(1000))}, InitContainers: []core.Container{prepare}, Containers: []core.Container{{Name: "aio", Image: Image, Env: env, Ports: []core.ContainerPort{{ContainerPort: 8080}}, ReadinessProbe: &core.Probe{ProbeHandler: core.ProbeHandler{TCPSocket: &core.TCPSocketAction{Port: intstr.FromInt32(8080)}}, InitialDelaySeconds: 5, PeriodSeconds: 2}, Resources: core.ResourceRequirements{Requests: core.ResourceList{core.ResourceCPU: resource.MustParse("200m"), core.ResourceMemory: resource.MustParse("512Mi")}, Limits: core.ResourceList{core.ResourceCPU: resource.MustParse("2"), core.ResourceMemory: resource.MustParse("3Gi")}}, VolumeMounts: []core.VolumeMount{{Name: "workspace", MountPath: "/workspace"}, {Name: "shm", MountPath: "/dev/shm"}}}}, Volumes: []core.Volume{{Name: "workspace", VolumeSource: core.VolumeSource{PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{ClaimName: n}}}, {Name: "shm", VolumeSource: core.VolumeSource{EmptyDir: &core.EmptyDirVolumeSource{Medium: core.StorageMediumMemory, SizeLimit: pointer(resource.MustParse("512Mi"))}}}}}}
+		env := []core.EnvVar{
+			{Name: "WORKSPACE", Value: "/workspace"},
+			{
+				Name: "SANDBOX_API_KEY",
+				ValueFrom: &core.EnvVarSource{
+					SecretKeyRef: &core.SecretKeySelector{
+						LocalObjectReference: core.LocalObjectReference{Name: n},
+						Key:                  "aio-token",
+					},
+				},
+			},
+		}
+		prepare := core.Container{
+			Name:    "prepare",
+			Image:   Image,
+			Command: []string{"sh", "-eu", "-c", prepareScript},
+			Env: []core.EnvVar{
+				{
+					Name: "REUSE_WORKTREE",
+					Value: strconv.FormatBool(
+						pvc.Annotations["forge-prepared-head"] == repository.Head,
+					),
+				},
+				{Name: "REPOSITORY_URL", Value: repository.URL},
+				{Name: "BASE_HEAD", Value: repository.Head},
+				{Name: "WORK_BRANCH", Value: repository.Branch},
+				{
+					Name: "GITLAB_TOKEN",
+					ValueFrom: &core.EnvVarSource{
+						SecretKeyRef: &core.SecretKeySelector{
+							LocalObjectReference: core.LocalObjectReference{Name: n},
+							Key:                  "git-token",
+						},
+					},
+				},
+			},
+			VolumeMounts: []core.VolumeMount{{Name: "workspace", MountPath: "/workspace"}},
+			SecurityContext: &core.SecurityContext{
+				RunAsUser:  pointer(int64(1000)),
+				RunAsGroup: pointer(int64(1000)),
+			},
+		}
+		pod = &core.Pod{
+			ObjectMeta: meta.ObjectMeta{
+				Name:        n,
+				Labels:      taskLabels(task, round),
+				Annotations: map[string]string{"forge-workspace-head": repository.Head},
+			},
+			Spec: core.PodSpec{
+				AutomountServiceAccountToken: pointer(false),
+				RestartPolicy:                core.RestartPolicyNever,
+				SecurityContext:              &core.PodSecurityContext{FSGroup: pointer(int64(1000))},
+				InitContainers:               []core.Container{prepare},
+				Containers: []core.Container{
+					{
+						Name:  "aio",
+						Image: Image,
+						Env:   env,
+						Ports: []core.ContainerPort{{ContainerPort: 8080}},
+						ReadinessProbe: &core.Probe{
+							ProbeHandler: core.ProbeHandler{
+								TCPSocket: &core.TCPSocketAction{
+									Port: intstr.FromInt32(8080),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       2,
+						},
+						Resources: core.ResourceRequirements{
+							Requests: core.ResourceList{
+								core.ResourceCPU:    resource.MustParse("200m"),
+								core.ResourceMemory: resource.MustParse("512Mi"),
+							},
+							Limits: core.ResourceList{
+								core.ResourceCPU:    resource.MustParse("2"),
+								core.ResourceMemory: resource.MustParse("3Gi"),
+							},
+						},
+						VolumeMounts: []core.VolumeMount{
+							{Name: "workspace", MountPath: "/workspace"},
+							{Name: "shm", MountPath: "/dev/shm"},
+						},
+					},
+				},
+				Volumes: []core.Volume{
+					{
+						Name: "workspace",
+						VolumeSource: core.VolumeSource{
+							PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{
+								ClaimName: n,
+							},
+						},
+					},
+					{
+						Name: "shm",
+						VolumeSource: core.VolumeSource{
+							EmptyDir: &core.EmptyDirVolumeSource{
+								Medium:    core.StorageMediumMemory,
+								SizeLimit: pointer(resource.MustParse("512Mi")),
+							},
+						},
+					},
+				},
+			},
+		}
 		pod, err = m.kube.CoreV1().Pods(ns).Create(ctx, pod, meta.CreateOptions{})
 	}
 	if err != nil {
@@ -110,7 +237,9 @@ func (m *Manager) Ensure(ctx context.Context, task, round string, repository Rep
 		}
 	}
 	if pod.Status.Phase == core.PodFailed || pod.Status.Phase == core.PodSucceeded {
-		return Endpoint{}, errors.New("AIO instance is not running; inspect stop and workspace before recreating")
+		return Endpoint{}, errors.New(
+			"AIO instance is not running; inspect stop and workspace before recreating",
+		)
 	}
 	if pod.DeletionTimestamp != nil {
 		return Endpoint{}, ErrPreparing
@@ -129,22 +258,31 @@ func (m *Manager) Ensure(ctx context.Context, task, round string, repository Rep
 			pvc.Annotations = map[string]string{}
 		}
 		pvc.Annotations["forge-prepared-head"] = repository.Head
-		if _, err = m.kube.CoreV1().PersistentVolumeClaims(ns).Update(ctx, pvc, meta.UpdateOptions{}); err != nil {
+		if _, err = m.kube.CoreV1().
+			PersistentVolumeClaims(ns).
+			Update(ctx, pvc, meta.UpdateOptions{}); err != nil {
 			return Endpoint{}, err
 		}
 	}
 	return Endpoint{URL: "http://" + n + "." + ns + ".svc:8080", Token: string(secret.Data["aio-token"])}, nil
 }
+
 func (m *Manager) Access(ctx context.Context, round string) (Endpoint, error) {
 	secret, err := m.kube.CoreV1().Secrets(m.namespace).Get(ctx, name(round), meta.GetOptions{})
 	if err != nil {
 		return Endpoint{}, err
 	}
-	return Endpoint{URL: "http://" + name(round) + "." + m.namespace + ".svc:8080", Token: string(secret.Data["aio-token"])}, nil
+	return Endpoint{
+		URL:   "http://" + name(round) + "." + m.namespace + ".svc:8080",
+		Token: string(secret.Data["aio-token"]),
+	}, nil
 }
+
 func (m *Manager) Stop(ctx context.Context, round string) error {
 	n := name(round)
-	err := m.kube.CoreV1().Pods(m.namespace).Delete(ctx, n, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10))})
+	err := m.kube.CoreV1().
+		Pods(m.namespace).
+		Delete(ctx, n, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10))})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -188,7 +326,7 @@ func (m *Manager) Fence(ctx context.Context, task, round string, epoch int64) er
 		return nil
 	}
 	if old > epoch {
-		return fmt.Errorf("stale AIO owner epoch")
+		return errors.New("stale AIO owner epoch")
 	}
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}
@@ -200,7 +338,9 @@ func (m *Manager) Fence(ctx context.Context, task, round string, epoch int64) er
 		return err
 	}
 	if old > 0 {
-		err = m.kube.CoreV1().Pods(m.namespace).Delete(ctx, pod.Name, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10)), Preconditions: &meta.Preconditions{UID: &updated.UID}})
+		err = m.kube.CoreV1().
+			Pods(m.namespace).
+			Delete(ctx, pod.Name, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10)), Preconditions: &meta.Preconditions{UID: &updated.UID}})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -232,7 +372,9 @@ func (m *Manager) StopAll(ctx context.Context, task, round string) error {
 	if err := m.Stop(ctx, task); err != nil {
 		return err
 	}
-	pods, err := m.kube.CoreV1().Pods(m.namespace).List(ctx, meta.ListOptions{LabelSelector: "forge-round=" + round})
+	pods, err := m.kube.CoreV1().
+		Pods(m.namespace).
+		List(ctx, meta.ListOptions{LabelSelector: "forge-round=" + round})
 	if err != nil {
 		return err
 	}
@@ -240,7 +382,10 @@ func (m *Manager) StopAll(ctx context.Context, task, round string) error {
 		if pod.Status.Phase == core.PodSucceeded || pod.Status.Phase == core.PodFailed {
 			continue
 		}
-		if err = m.kube.CoreV1().Pods(m.namespace).Delete(ctx, pod.Name, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10))}); err != nil && !apierrors.IsNotFound(err) {
+		if err = m.kube.CoreV1().
+			Pods(m.namespace).
+			Delete(ctx, pod.Name, meta.DeleteOptions{GracePeriodSeconds: pointer(int64(10))}); err != nil &&
+			!apierrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -249,7 +394,9 @@ func (m *Manager) StopAll(ctx context.Context, task, round string) error {
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		pods, err = m.kube.CoreV1().Pods(m.namespace).List(ctx, meta.ListOptions{LabelSelector: "forge-round=" + round})
+		pods, err = m.kube.CoreV1().
+			Pods(m.namespace).
+			List(ctx, meta.ListOptions{LabelSelector: "forge-round=" + round})
 		if err != nil {
 			return err
 		}

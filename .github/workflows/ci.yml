@@ -22,8 +22,6 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: make integration build
-      - run: python3 -m unittest discover -s tools -p 'test_*.py'
       - uses: azure/setup-helm@v4.3.0
-      - run: helm lint charts/forge-coding --set existingSecret=test,database.existingSecret=test
-      - run: helm lint charts/forge-coding-tools --set existingSecret=test
-      - run: docker build -t forge-coding-api:ci .
+      - run: helm lint deploy/charts/forge-coding --set existingSecret=test,database.existingSecret=test
+      - run: docker build -f deploy/docker/Dockerfile -t forge-coding-api:ci .

@@ -30,7 +30,14 @@ type fixture struct {
 func setup(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{clock: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC), tokens: map[string]*token{}}
-	f.tokens["old-secret"] = &token{ID: 7, UserID: 1, Name: "service", Scopes: []string{"api"}, ExpiresAt: f.clock.AddDate(0, 0, 5).Format("2006-01-02"), Value: "old-secret"}
+	f.tokens["old-secret"] = &token{
+		ID:        7,
+		UserID:    1,
+		Name:      "service",
+		Scopes:    []string{"api"},
+		ExpiresAt: f.clock.AddDate(0, 0, 5).Format("2006-01-02"),
+		Value:     "old-secret",
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		auth := f.tokens[req.Header.Get("PRIVATE-TOKEN")]
 		if auth == nil || auth.Revoked {
@@ -67,7 +74,14 @@ func setup(t *testing.T) *fixture {
 			}
 			f.issued++
 			value := fmt.Sprintf("new-secret-%d", f.issued)
-			next := &token{ID: int64(7 + f.issued), UserID: 1, Name: body.Name, Scopes: body.Scopes, ExpiresAt: body.ExpiresAt, Value: value}
+			next := &token{
+				ID:        int64(7 + f.issued),
+				UserID:    1,
+				Name:      body.Name,
+				Scopes:    body.Scopes,
+				ExpiresAt: body.ExpiresAt,
+				Value:     value,
+			}
 			f.tokens[value] = next
 			json.NewEncoder(w).Encode(next)
 			return
@@ -92,14 +106,65 @@ func setup(t *testing.T) *fixture {
 	}))
 	t.Cleanup(server.Close)
 	f.kube = fake.NewClientset(
-		&core.Secret{ObjectMeta: meta.ObjectMeta{Name: "source", Namespace: "primary"}, Data: map[string][]byte{"GITLAB_TOKEN": []byte("old-secret"), "untouched": []byte("other-setting")}},
+		&core.Secret{
+			ObjectMeta: meta.ObjectMeta{Name: "source", Namespace: "primary"},
+			Data: map[string][]byte{
+				"GITLAB_TOKEN": []byte("old-secret"),
+				"untouched":    []byte("other-setting"),
+			},
+		},
 		&core.Secret{ObjectMeta: meta.ObjectMeta{Name: "state", Namespace: "primary"}},
-		&core.Secret{ObjectMeta: meta.ObjectMeta{Name: "consumer", Namespace: "other"}, Data: map[string][]byte{"GITLAB_TOKEN": []byte("old-secret")}},
-		&core.Secret{ObjectMeta: meta.ObjectMeta{Name: "aio-task", Namespace: "primary"}, Data: map[string][]byte{"git-token": []byte("old-secret"), "aio-token": []byte("sandbox-key")}},
-		&core.Pod{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "primary", Labels: map[string]string{"app": "api"}}, Status: core.PodStatus{Phase: core.PodRunning, ContainerStatuses: []core.ContainerStatus{{Name: "api", Ready: true}}}},
-		&core.Pod{ObjectMeta: meta.ObjectMeta{Name: "worker", Namespace: "other", Labels: map[string]string{"app": "worker"}}, Status: core.PodStatus{Phase: core.PodRunning, ContainerStatuses: []core.ContainerStatus{{Name: "worker", Ready: true}}}},
+		&core.Secret{
+			ObjectMeta: meta.ObjectMeta{Name: "consumer", Namespace: "other"},
+			Data:       map[string][]byte{"GITLAB_TOKEN": []byte("old-secret")},
+		},
+		&core.Secret{
+			ObjectMeta: meta.ObjectMeta{Name: "aio-task", Namespace: "primary"},
+			Data: map[string][]byte{
+				"git-token": []byte("old-secret"),
+				"aio-token": []byte("sandbox-key"),
+			},
+		},
+		&core.Pod{
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "api",
+				Namespace: "primary",
+				Labels:    map[string]string{"app": "api"},
+			},
+			Status: core.PodStatus{
+				Phase:             core.PodRunning,
+				ContainerStatuses: []core.ContainerStatus{{Name: "api", Ready: true}},
+			},
+		},
+		&core.Pod{
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "worker",
+				Namespace: "other",
+				Labels:    map[string]string{"app": "worker"},
+			},
+			Status: core.PodStatus{
+				Phase:             core.PodRunning,
+				ContainerStatuses: []core.ContainerStatus{{Name: "worker", Ready: true}},
+			},
+		},
 	)
-	f.r = &runner{config: Config{URL: server.URL, Source: Reference{Namespace: "primary", Name: "source", Key: "GITLAB_TOKEN"}, StateSecret: "state", Namespaces: []string{"primary", "other"}, Targets: []Probe{{Namespace: "primary", Deployment: "api", Container: "api"}, {Namespace: "other", Deployment: "worker", Container: "worker"}}, BeforeDays: 14, LifetimeDays: 90}, kube: f.kube, http: server.Client(), now: func() time.Time { return f.clock }}
+	f.r = &runner{
+		config: Config{
+			URL:         server.URL,
+			Source:      Reference{Namespace: "primary", Name: "source", Key: "GITLAB_TOKEN"},
+			StateSecret: "state",
+			Namespaces:  []string{"primary", "other"},
+			Targets: []Probe{
+				{Namespace: "primary", Deployment: "api", Container: "api"},
+				{Namespace: "other", Deployment: "worker", Container: "worker"},
+			},
+			BeforeDays:   14,
+			LifetimeDays: 90,
+		},
+		kube: f.kube,
+		http: server.Client(),
+		now:  func() time.Time { return f.clock },
+	}
 	f.r.execute = func(ctx context.Context, p Probe, _ *core.Pod) (token, error) {
 		name := "source"
 		if p.Namespace == "other" {
@@ -113,6 +178,7 @@ func setup(t *testing.T) *fixture {
 	}
 	return f
 }
+
 func TestRotationRetainsOldUntilAllConsumersLoad(t *testing.T) {
 	f := setup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
@@ -147,6 +213,7 @@ func TestRotationRetainsOldUntilAllConsumersLoad(t *testing.T) {
 		t.Fatal("retired plaintext retained", err)
 	}
 }
+
 func TestPartialDistributionResumesSavedCredential(t *testing.T) {
 	f := setup(t)
 	blocked := true
@@ -171,6 +238,7 @@ func TestPartialDistributionResumesSavedCredential(t *testing.T) {
 		t.Fatal("saved replacement was reissued")
 	}
 }
+
 func TestLostIssuanceSaveReconcilesOrphan(t *testing.T) {
 	f := setup(t)
 	once := true
@@ -195,6 +263,7 @@ func TestLostIssuanceSaveReconcilesOrphan(t *testing.T) {
 		t.Fatal("orphan or replacement mishandled")
 	}
 }
+
 func TestOverlapAndActiveGitOperationDelayRetirement(t *testing.T) {
 	f := setup(t)
 	f.r.config.GraceSeconds = 86400
@@ -205,7 +274,14 @@ func TestOverlapAndActiveGitOperationDelayRetirement(t *testing.T) {
 		t.Fatal("overlap not retained")
 	}
 	f.clock = f.clock.Add(25 * time.Hour)
-	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "publish", Namespace: "primary", Labels: map[string]string{"app": "coding-artifact"}}, Status: core.PodStatus{Phase: core.PodRunning}}
+	pod := &core.Pod{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      "publish",
+			Namespace: "primary",
+			Labels:    map[string]string{"app": "coding-artifact"},
+		},
+		Status: core.PodStatus{Phase: core.PodRunning},
+	}
 	f.kube.CoreV1().Pods("primary").Create(context.Background(), pod, meta.CreateOptions{})
 	if err := f.r.maintain(context.Background()); err == nil {
 		t.Fatal("active Git operation was ignored")
@@ -222,6 +298,7 @@ func TestOverlapAndActiveGitOperationDelayRetirement(t *testing.T) {
 		t.Fatal("retirement failed")
 	}
 }
+
 func TestFarExpirySkipsIssuanceAndErrorsRedactCredentials(t *testing.T) {
 	f := setup(t)
 	f.tokens["old-secret"].ExpiresAt = f.clock.AddDate(0, 0, 90).Format("2006-01-02")
@@ -240,13 +317,22 @@ func TestFarExpirySkipsIssuanceAndErrorsRedactCredentials(t *testing.T) {
 
 func TestPendingRepositoryPreparationRetainsOldCredential(t *testing.T) {
 	f := setup(t)
-	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: "aio-pending", Namespace: "primary", Labels: map[string]string{"app": "coding-aio"}}, Status: core.PodStatus{Phase: core.PodPending}}
+	pod := &core.Pod{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      "aio-pending",
+			Namespace: "primary",
+			Labels:    map[string]string{"app": "coding-aio"},
+		},
+		Status: core.PodStatus{Phase: core.PodPending},
+	}
 	f.kube.CoreV1().Pods("primary").Create(context.Background(), pod, meta.CreateOptions{})
 	if err := f.r.maintain(context.Background()); err == nil || f.tokens["old-secret"].Revoked {
 		t.Fatal("pending preparation lost its credential", err)
 	}
 	pod.Status.Phase = core.PodRunning
-	pod.Status.InitContainerStatuses = []core.ContainerStatus{{Name: "prepare", State: core.ContainerState{Terminated: &core.ContainerStateTerminated{ExitCode: 0}}}}
+	pod.Status.InitContainerStatuses = []core.ContainerStatus{
+		{Name: "prepare", State: core.ContainerState{Terminated: &core.ContainerStateTerminated{ExitCode: 0}}},
+	}
 	f.kube.CoreV1().Pods("primary").Update(context.Background(), pod, meta.UpdateOptions{})
 	if err := f.r.maintain(context.Background()); err != nil {
 		t.Fatal(err)
@@ -263,7 +349,9 @@ func TestTaskCreatedDuringProjectionGetsReplacement(t *testing.T) {
 	f.r.execute = func(ctx context.Context, p Probe, pod *core.Pod) (token, error) {
 		if once {
 			once = false
-			_, err := f.kube.CoreV1().Secrets("primary").Create(ctx, &core.Secret{ObjectMeta: meta.ObjectMeta{Name: "late-task", Namespace: "primary"}, Data: map[string][]byte{"git-token": []byte("old-secret")}}, meta.CreateOptions{})
+			_, err := f.kube.CoreV1().
+				Secrets("primary").
+				Create(ctx, &core.Secret{ObjectMeta: meta.ObjectMeta{Name: "late-task", Namespace: "primary"}, Data: map[string][]byte{"git-token": []byte("old-secret")}}, meta.CreateOptions{})
 			if err != nil {
 				return token{}, err
 			}

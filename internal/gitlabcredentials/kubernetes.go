@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -30,7 +31,9 @@ func (r *runner) distribute(ctx context.Context, saved state) error {
 				}
 			}
 			if changed {
-				if _, err = r.kube.CoreV1().Secrets(namespace).Update(ctx, &secret, meta.UpdateOptions{}); err != nil {
+				if _, err = r.kube.CoreV1().
+					Secrets(namespace).
+					Update(ctx, &secret, meta.UpdateOptions{}); err != nil {
 					return err
 				}
 			}
@@ -38,26 +41,40 @@ func (r *runner) distribute(ctx context.Context, saved state) error {
 	}
 	return nil
 }
+
 func (r *runner) probe(ctx context.Context, target Probe, pod *core.Pod) (token, error) {
 	// Fixed command emits only metadata; it cannot return credential plaintext.
-	req := r.kube.CoreV1().RESTClient().Post().Resource("pods").Namespace(target.Namespace).Name(pod.Name).SubResource("exec").VersionedParams(&core.PodExecOptions{Container: target.Container, Command: []string{"/forge", "gitlab-credential-status"}, Stdout: true, Stderr: true}, scheme.ParameterCodec)
+	req := r.kube.CoreV1().
+		RESTClient().
+		Post().
+		Resource("pods").
+		Namespace(target.Namespace).
+		Name(pod.Name).
+		SubResource("exec").
+		VersionedParams(&core.PodExecOptions{Container: target.Container, Command: []string{"/forge", "gitlab-credential-status"}, Stdout: true, Stderr: true}, scheme.ParameterCodec)
 	executor, err := remotecommand.NewSPDYExecutor(r.rest, http.MethodPost, req.URL())
 	if err != nil {
-		return token{}, fmt.Errorf("credential probe transport unavailable")
+		return token{}, errors.New("credential probe transport unavailable")
 	}
 	var output, diagnostic bytes.Buffer
-	if err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &output, Stderr: &diagnostic}); err != nil {
+	if err = executor.StreamWithContext(
+		ctx,
+		remotecommand.StreamOptions{Stdout: &output, Stderr: &diagnostic},
+	); err != nil {
 		return token{}, fmt.Errorf("credential probe failed for %s/%s", target.Namespace, pod.Name)
 	}
 	var result token
 	if err = json.Unmarshal(output.Bytes(), &result); err != nil {
-		return result, fmt.Errorf("invalid credential probe metadata")
+		return result, errors.New("invalid credential probe metadata")
 	}
 	return result, nil
 }
+
 func (r *runner) verifyOnce(ctx context.Context, id int64) error {
 	for _, target := range r.config.Targets {
-		pods, err := r.kube.CoreV1().Pods(target.Namespace).List(ctx, meta.ListOptions{LabelSelector: "app=" + target.Deployment})
+		pods, err := r.kube.CoreV1().
+			Pods(target.Namespace).
+			List(ctx, meta.ListOptions{LabelSelector: "app=" + target.Deployment})
 		if err != nil {
 			return err
 		}
@@ -93,6 +110,7 @@ func (r *runner) verifyOnce(ctx context.Context, id int64) error {
 	}
 	return nil
 }
+
 func (r *runner) verify(ctx context.Context, id int64) error {
 	deadline := time.NewTimer(4 * time.Minute)
 	defer deadline.Stop()
@@ -111,6 +129,7 @@ func (r *runner) verify(ctx context.Context, id int64) error {
 		}
 	}
 }
+
 func (r *runner) drain(ctx context.Context) error {
 	for _, namespace := range r.config.Namespaces {
 		pods, err := r.kube.CoreV1().Pods(namespace).List(ctx, meta.ListOptions{})
@@ -122,7 +141,7 @@ func (r *runner) drain(ctx context.Context) error {
 				continue
 			}
 			if pod.Labels["app"] == "coding-artifact" {
-				return fmt.Errorf("old credential retained for active artifact operation")
+				return errors.New("old credential retained for active artifact operation")
 			}
 			if pod.Labels["app"] == "coding-aio" {
 				prepared := false
@@ -132,12 +151,12 @@ func (r *runner) drain(ctx context.Context) error {
 					}
 				}
 				if !prepared {
-					return fmt.Errorf("old credential retained for repository preparation")
+					return errors.New("old credential retained for repository preparation")
 				}
 			}
 			// Other applications are verified above through hot-loaded credentials.
 			if strings.HasPrefix(pod.Name, "aio-") && pod.DeletionTimestamp != nil {
-				return fmt.Errorf("old sandbox operation is stopping")
+				return errors.New("old sandbox operation is stopping")
 			}
 		}
 	}

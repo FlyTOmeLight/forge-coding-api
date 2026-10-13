@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +41,7 @@ func (m *Manager) Pause(ctx context.Context, task, round string) error {
 	}
 	return nil
 }
+
 func (m *Manager) Resume(ctx context.Context, task, round string) error {
 	pod, err := m.kube.CoreV1().Pods(m.namespace).Get(ctx, name(task), meta.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -64,7 +66,11 @@ func (m *Manager) Resume(ctx context.Context, task, round string) error {
 
 // Published identifies the revision represented by the retained working tree.
 func (m *Manager) Published(ctx context.Context, task, head string) error {
-	if _, err := m.kube.CoreV1().Pods(m.namespace).Get(ctx, name(task), meta.GetOptions{}); apierrors.IsNotFound(err) {
+	if _, err := m.kube.CoreV1().
+		Pods(m.namespace).
+		Get(ctx, name(task), meta.GetOptions{}); apierrors.IsNotFound(
+		err,
+	) {
 		return nil
 	} else if err != nil {
 		return err
@@ -77,7 +83,9 @@ func (m *Manager) Published(ctx context.Context, task, head string) error {
 		pvc.Annotations = map[string]string{}
 	}
 	pvc.Annotations["forge-prepared-head"] = head
-	if _, err = m.kube.CoreV1().PersistentVolumeClaims(m.namespace).Update(ctx, pvc, meta.UpdateOptions{}); err != nil {
+	if _, err = m.kube.CoreV1().
+		PersistentVolumeClaims(m.namespace).
+		Update(ctx, pvc, meta.UpdateOptions{}); err != nil {
 		return err
 	}
 	pod, err := m.kube.CoreV1().Pods(m.namespace).Get(ctx, name(task), meta.GetOptions{})
@@ -94,17 +102,28 @@ func (m *Manager) Published(ctx context.Context, task, head string) error {
 	_, err = m.kube.CoreV1().Pods(m.namespace).Update(ctx, pod, meta.UpdateOptions{})
 	return err
 }
+
 func (m *Manager) command(ctx context.Context, pod string, command []string) error {
 	if m.execCommand != nil {
 		return m.execCommand(ctx, pod, command)
 	}
-	req := m.kube.CoreV1().RESTClient().Post().Resource("pods").Namespace(m.namespace).Name(pod).SubResource("exec").VersionedParams(&core.PodExecOptions{Container: "aio", Command: command, Stdout: true, Stderr: true}, scheme.ParameterCodec)
+	req := m.kube.CoreV1().
+		RESTClient().
+		Post().
+		Resource("pods").
+		Namespace(m.namespace).
+		Name(pod).
+		SubResource("exec").
+		VersionedParams(&core.PodExecOptions{Container: "aio", Command: command, Stdout: true, Stderr: true}, scheme.ParameterCodec)
 	executor, err := remotecommand.NewSPDYExecutor(m.config, "POST", req.URL())
 	if err != nil {
 		return err
 	}
 	var output, diagnostic bytes.Buffer
-	if err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &output, Stderr: &diagnostic}); err != nil {
+	if err = executor.StreamWithContext(
+		ctx,
+		remotecommand.StreamOptions{Stdout: &output, Stderr: &diagnostic},
+	); err != nil {
 		return fmt.Errorf("sandbox process control failed: %w: %s", err, output.String()+diagnostic.String())
 	}
 	return nil
@@ -137,6 +156,7 @@ while stable < 2:
     if time.monotonic() > deadline: raise RuntimeError('sandbox processes did not quiesce')
     time.sleep(0.05)
 `
+
 const resumeScript = `
 import os, signal
 for entry in os.listdir('/proc'):

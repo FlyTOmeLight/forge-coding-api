@@ -24,7 +24,10 @@ type Artifact struct {
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null", "-c", "credential.helper="}, args...)...)
+	cmd := exec.CommandContext(
+		ctx,
+		"git",
+		append([]string{"-c", "core.hooksPath=/dev/null", "-c", "credential.helper="}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
@@ -33,6 +36,7 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	return string(out), nil
 }
+
 func allowed(p string, scopes []string) bool {
 	if !path.IsAbs(p) && p != "" && !strings.HasPrefix(p, "../") {
 		for _, scope := range scopes {
@@ -48,6 +52,7 @@ func allowed(p string, scopes []string) bool {
 	}
 	return false
 }
+
 func copyTree(source, destination string) error {
 	return filepath.WalkDir(source, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -73,9 +78,9 @@ func copyTree(source, destination string) error {
 			return err
 		}
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			return os.MkdirAll(target, 0o755)
 		}
-		if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err = os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -84,7 +89,8 @@ func copyTree(source, destination string) error {
 				return err
 			}
 			resolved := filepath.Clean(filepath.Join(filepath.Dir(p), link))
-			if filepath.IsAbs(link) || !strings.HasPrefix(resolved, filepath.Clean(source)+string(filepath.Separator)) {
+			if filepath.IsAbs(link) ||
+				!strings.HasPrefix(resolved, filepath.Clean(source)+string(filepath.Separator)) {
 				return fmt.Errorf("source symlink escapes workspace: %s", rel)
 			}
 			return os.Symlink(link, target)
@@ -109,7 +115,12 @@ func copyTree(source, destination string) error {
 		return closeErr
 	})
 }
-func CreateArtifact(ctx context.Context, source, candidate, repository, head string, scopes []string) (Artifact, error) {
+
+func CreateArtifact(
+	ctx context.Context,
+	source, candidate, repository, head string,
+	scopes []string,
+) (Artifact, error) {
 	if _, err := os.Stat(candidate); err == nil {
 		return Artifact{}, errors.New("candidate already exists; inspect saved artifact instead of overwriting")
 	}
@@ -183,11 +194,12 @@ func CreateArtifact(ctx context.Context, source, candidate, repository, head str
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err = os.WriteFile(filepath.Join(filepath.Dir(candidate), "candidate.json"), raw, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(filepath.Dir(candidate), "candidate.json"), raw, 0o600); err != nil {
 		return Artifact{}, err
 	}
 	return result, nil
 }
+
 func fileFingerprint(p string) (string, error) {
 	info, err := os.Lstat(p)
 	if err != nil {
@@ -206,8 +218,9 @@ func fileFingerprint(p string) (string, error) {
 	if _, err = io.Copy(h, f); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("executable=%t:%s", info.Mode()&0100 != 0, hex.EncodeToString(h.Sum(nil))), nil
+	return fmt.Sprintf("executable=%t:%s", info.Mode()&0o100 != 0, hex.EncodeToString(h.Sum(nil))), nil
 }
+
 func CheckManifest(root string, manifest map[string]string) error {
 	for p, expected := range manifest {
 		if path.IsAbs(p) || hasParentSegment(p) || strings.HasPrefix(p, ".git/") {

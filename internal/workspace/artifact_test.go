@@ -13,7 +13,7 @@ func TestCandidateUsesTrustedGitAndChecksAllDeliveryPaths(t *testing.T) {
 	origin := filepath.Join(root, "origin")
 	source := filepath.Join(root, "source")
 	candidate := filepath.Join(root, "candidate")
-	if err := os.MkdirAll(origin, 0755); err != nil {
+	if err := os.MkdirAll(origin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	command := func(dir string, args ...string) string {
@@ -27,17 +27,17 @@ func TestCandidateUsesTrustedGitAndChecksAllDeliveryPaths(t *testing.T) {
 	command(origin, "init")
 	command(origin, "config", "user.email", "test@local")
 	command(origin, "config", "user.name", "test")
-	os.WriteFile(filepath.Join(origin, "calc.py"), []byte("original\n"), 0644)
-	os.WriteFile(filepath.Join(origin, "deleted.py"), []byte("old\n"), 0644)
+	os.WriteFile(filepath.Join(origin, "calc.py"), []byte("original\n"), 0o644)
+	os.WriteFile(filepath.Join(origin, "deleted.py"), []byte("old\n"), 0o644)
 	command(origin, "add", ".")
 	command(origin, "commit", "-m", "base")
 	head := command(origin, "rev-parse", "HEAD")
 	command(root, "clone", origin, source)
-	os.WriteFile(filepath.Join(source, "calc.py"), []byte("changed\n"), 0644)
+	os.WriteFile(filepath.Join(source, "calc.py"), []byte("changed\n"), 0o644)
 	os.Remove(filepath.Join(source, "deleted.py"))
-	os.WriteFile(filepath.Join(source, "new.py"), []byte("new\n"), 0755)
+	os.WriteFile(filepath.Join(source, "new.py"), []byte("new\n"), 0o755)
 	// The source's git config must never determine trusted collection behavior.
-	os.WriteFile(filepath.Join(source, ".git", "config"), []byte("not valid Git config"), 0644)
+	os.WriteFile(filepath.Join(source, ".git", "config"), []byte("not valid Git config"), 0o644)
 	// The helper's working directory is provided by its trusted Job.
 
 	artifact, err := CreateArtifact(ctx, source, candidate, origin, stringTrim(head), []string{"*.py"})
@@ -50,7 +50,7 @@ func TestCandidateUsesTrustedGitAndChecksAllDeliveryPaths(t *testing.T) {
 	if err = CheckManifest(candidate, artifact.Manifest); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(candidate, "calc.py"), []byte("changed by checks\n"), 0644)
+	os.WriteFile(filepath.Join(candidate, "calc.py"), []byte("changed by checks\n"), 0o644)
 	if err = CheckManifest(candidate, artifact.Manifest); err == nil {
 		t.Fatal("source mutation was accepted")
 	}
@@ -59,6 +59,7 @@ func TestCandidateUsesTrustedGitAndChecksAllDeliveryPaths(t *testing.T) {
 		t.Fatal("out-of-scope addition/deletion was accepted")
 	}
 }
+
 func stringTrim(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]
@@ -69,7 +70,7 @@ func stringTrim(s string) string {
 func TestManifestTracksGitExecutableBitNotMountPermissions(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "source.py")
-	if err := os.WriteFile(file, []byte("print(1)\n"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	fingerprint, err := fileFingerprint(file)
@@ -77,13 +78,13 @@ func TestManifestTracksGitExecutableBitNotMountPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := map[string]string{"source.py": fingerprint}
-	if err = os.Chmod(file, 0664); err != nil {
+	if err = os.Chmod(file, 0o664); err != nil {
 		t.Fatal(err)
 	}
 	if err = CheckManifest(root, manifest); err != nil {
 		t.Fatalf("volume group-write permission is not a Git change: %v", err)
 	}
-	if err = os.Chmod(file, 0755); err != nil {
+	if err = os.Chmod(file, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err = CheckManifest(root, manifest); err == nil {

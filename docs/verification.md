@@ -1,3 +1,11 @@
+## 2026-10-13 server-go 重构与发版
+
+Coding API 与独立 dispatcher 迁移到正式依赖 server-go v0.3.1，按 `cmd/server`、`internal/service`、`internal/app/coding`、`internal/table`、`internal/client`、`conf/server` 与 `deploy` 组织。Bootstrap 显式管理资源，HTTPHost 先排空请求再停止服务；dispatcher 取消后等待所属后台任务结束。业务错误 envelope 和现有路由保留，JSON 通过框架绑定并拒绝未知字段、多文档；64 KiB 上限返回 413。
+
+在独立 PostgreSQL 17.6 容器中执行全部数据库用例与 `GOWORK=off go test -race -count=1 ./...`，以及 `go vet`、两个入口构建、Helm lint 和实际 Docker 镜像构建，全部通过。验证覆盖框架配置、启动取消、真实 HTTP 请求、数据库就绪探针、业务错误、404 请求 ID、资源关闭和 dispatcher 退出。现有任务、权限、交付、评测环境及候选启用/回退回归一并通过。真实 GitLab 的两个可选 MR 验收用例本次未配置；未运行真实模型试点。
+
+发布镜像为 `forge-coding-api:0.16.0-server-go`，API/dispatcher 均 Ready。八项真实 HTTP 冒烟验证通过：健康与数据库就绪检查、业务及服务鉴权、404/405、尾斜杠和业务参数校验。独立 API 冒烟进程收到 SIGTERM 后退出码为 0；GitLab 凭据状态命令正常。脱敏测试与部署证据保存在本地 `.local/server-go/`。
+
 ## 2026-10-05 精确编辑失败不再中断整轮
 
 ## 2026-10-08：Eino + AIO 替换完成
