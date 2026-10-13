@@ -9,9 +9,12 @@
 - `cmd/server/`：API、dispatcher、migrate 入口。
 - `cmd/import-tenant/`：停写后将旧租户库的任务表导入空 Coding 数据库。
 - `service/`：公开构造、类型化配置装配、HTTP 生命周期和独立 dispatcher。
-- `internal/table/`：pgx 数据库连接、迁移、任务模型与事务内持久化。
-- `internal/app/coding/`：任务业务、HTTP 接口、租户授权、执行提交和结果验证。
-- `internal/client/`：租户与运行时 HTTP 协议；`gitlab/` 使用官方 Go SDK，保留业务类型与 Secret 轮换映射。
+- `internal/table/`：按真实表名组织模型、查询和更新，包含任务、轮次、反馈、事件、项目配置、候选发布和评测环境；连接和迁移由 `database.go` 管理。
+- `internal/app/task/`：任务创建与控制、执行对账、GitLab 同步、交付及任务沙箱。
+- `internal/app/project/`：项目执行配置、Agent 绑定、候选启用与回退。
+- `internal/app/evaluation/`：独立评测环境、校验、工具身份及过期回收。
+- `internal/app/platform/`、`internal/app/access/`：平台连接状态、会话与项目访问权限。
+- `internal/client/`：`tenant/`、`agentic/`、`aio/`、`model/` 负责各自的外部协议；`gitlab/` 使用官方 Go SDK并处理 Secret 轮换。
 - `sdk/go/codingv1/`：随仓库版本发布的公开 Go SDK，任务、配置、候选发布、评测和工具契约。
 - `internal/config/`、`conf/server/`：业务配置校验与配置样例。
 - `internal/workspace/`：任务级 AIO Pod/PVC、仓库准备、候选快照与受控 GitLab 推送。
@@ -19,6 +22,8 @@
 - `deploy/charts/`：API/dispatcher、数据库和沙箱资源权限的 Helm Chart。
 
 ## 装配与资源所有权
+
+每个业务 app 的 Controller 负责路由、绑定、响应与 Swagger，Service 负责权限规则、事务和业务编排。SQL、行扫描与列表收集只放在对应的 Table 文件，事务范围由 Service 定义；持久化模型不从 SDK 派生。
 
 HTTP 入口使用 `app.Run(ctx, options, service.Build)`，统一管理配置、日志、连接和退出。`Build` 校验 `service.Config.Coding` 后交付数据库及 HTTP 连接，再构造 Coding。构造失败、路由注册失败和正常退出都由框架按顺序清理。
 
@@ -108,7 +113,7 @@ kubectl -n forge-tenant-split logs job/gitlab-credentials-check
 
 ## Go SDK 与 GitLab 接入
 
-公开包 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1` 在 MVP 阶段归属根模块，跟随整个仓库的 `v0.17.0` 版本发布，要求 Go 1.27.1 或更新版本。后端直接引用同一模块内的 SDK；后续需要独立发布时再拆分模块。安装与调用示例见 [SDK README](sdk/go/codingv1/README.md)。SDK 复用 server-go 的连接、context、超时与错误解码，支持项目会话、服务令牌、稳定幂等键和流式沙箱响应；服务端复用公开请求类型和领域数据。Agentic API 的 Coding 评测环境调用使用同一 SDK，保留其领域类型转换。
+公开包 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1` 在 MVP 阶段归属根模块，跟随整个仓库的 `v0.17.1` 版本发布，要求 Go 1.27.1 或更新版本。后端直接引用同一模块内的 SDK；后续需要独立发布时再拆分模块。安装与调用示例见 [SDK README](sdk/go/codingv1/README.md)。SDK 复用 server-go 的连接、context、超时与错误解码，支持项目会话、服务令牌、稳定幂等键和流式沙箱响应；服务端复用公开请求类型和领域数据。Agentic API 的 Coding 评测环境调用使用同一 SDK，保留其领域类型转换。
 
 GitLab 接入使用官方 `gitlab.com/gitlab-org/api/client-go v1.46.0`。分支、MR、评论、版本和 PAT 查询/创建/撤销由 SDK 处理。应用只保留业务类型转换、Draft 标题规则、按请求读取 Secret 和 4 MiB 原始 diff 上限。原始 diff 使用 SDK 的 Request/Do 与有上限的 writer，避免官方 byte-slice 方法读取整个无限制响应。写操作不自动重试；401/403 使用 SDK 错误，404 映射 SDK 的 `ErrNotFound`。凭据更新错误不回显令牌正文。
 
@@ -116,7 +121,7 @@ GitLab 接入使用官方 `gitlab.com/gitlab-org/api/client-go v1.46.0`。分支
 
 ```sh
 go mod edit -droprequire=github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1
-go get github.com/FlyTOmeLight/forge-coding-api@v0.17.0
+go get github.com/FlyTOmeLight/forge-coding-api@v0.17.1
 go mod tidy
 ```
 

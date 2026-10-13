@@ -1,9 +1,9 @@
 # Forge Coding Go SDK
 
-公开包：`github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。MVP 阶段与整个仓库使用同一个模块和版本，当前为 `v0.17.0`，要求 Go 1.27.1 或更新版本。后续有独立发布需求时再拆分模块；客户端的导入路径保持不变。
+公开包：`github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。MVP 阶段与整个仓库使用同一个模块和版本，当前为 `v0.17.1`，要求 Go 1.27.1 或更新版本。后续有独立发布需求时再拆分模块；客户端的导入路径保持不变。
 
 ```sh
-go get github.com/FlyTOmeLight/forge-coding-api@v0.17.0
+go get github.com/FlyTOmeLight/forge-coding-api@v0.17.1
 ```
 
 如果之前依赖独立 SDK，先执行 `go mod edit -droprequire=github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`，再安装根模块版本并运行 `go mod tidy`。旧独立模块与根模块同时提供相同包路径，会导致导入歧义，因此需删除旧模块依赖。

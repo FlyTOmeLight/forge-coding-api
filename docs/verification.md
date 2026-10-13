@@ -1,3 +1,13 @@
+## 2026-10-14：按业务职责与表名完成布局重构
+
+上一轮仅完成框架装配与生命周期，此轮补齐业务职责分层。`internal/app/coding` 已删除，拆为 task、project、evaluation、platform、access。Controller 负责请求绑定、响应、代理与 Swagger，Service 负责业务规则和事务；access 的 HTTP 鉴权放 middleware.go。生产 app 不含 SQL，业务 Service 不写响应。
+
+七张业务表分别在 `coding_tasks.go`、`coding_runs.go`、`coding_feedback.go`、`coding_events.go`、`coding_project_settings.go`、`coding_project_releases.go`、`coding_evaluation_environments.go` 中维护模型、具名查询与行映射。删除通用 QueryMaps，Task 持久化模型与 SDK 类型独立；列表查询补齐稳定排序。
+
+租户、Agentic、AIO、模型及 GitLab 的外部协议各归对应 Client。任务 dispatcher 与评测过期回收由公开 service 统一启动、取消和等待。SDK 仍属于根模块，按整仓版本发布。
+
+原 46 个业务测试全部保留，跨业务 HTTP 测试迁至 task 测试包并组合真实业务模块；新增鉴权先于绑定且单次查询权限的回归。隔离 PostgreSQL 的 `make integration build`（全量 race、vet、两个入口构建）、Helm lint、Docker 构建与职责检查通过。三个子代理分别完成任务、项目、评测模块及独立审查。未执行真实 GitLab MR 写入、模型调用或业务集群部署。
+
 ## 2026-10-14：MVP 统一仓库版本
 
 按当前 MVP 发布约定，SDK 删除独立 `go.mod` / `go.sum`，归入根模块 `github.com/FlyTOmeLight/forge-coding-api`，跟随整仓 `v0.17.0` 发布。SDK 的包路径保持 `github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1`。旧调用方需删除独立 SDK 模块依赖后改用根模块版本，避免导入歧义；后续需要独立发布时再拆分模块。

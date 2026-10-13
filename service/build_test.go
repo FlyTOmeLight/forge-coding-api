@@ -14,7 +14,7 @@ import (
 
 	"github.com/FlyTOmeLight/server-go/app"
 
-	"github.com/FlyTOmeLight/forge-coding-api/internal/app/coding"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/codingid"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 )
 
@@ -31,7 +31,7 @@ func runTestDatabase(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
-	schema := "test_" + coding.Token()[:16]
+	schema := "test_" + codingid.Token()[:16]
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
 	}

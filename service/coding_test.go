@@ -17,7 +17,7 @@ import (
 	"github.com/FlyTOmeLight/server-go/host"
 	"github.com/FlyTOmeLight/server-go/logger"
 
-	"github.com/FlyTOmeLight/forge-coding-api/internal/app/coding"
+	"github.com/FlyTOmeLight/forge-coding-api/internal/codingid"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/config"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 )
@@ -34,7 +34,7 @@ func TestFrameworkResourceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	schema := "test_" + coding.Token()[:16]
+	schema := "test_" + codingid.Token()[:16]
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestFrameworkResourceLifecycle(t *testing.T) {
 	if err := bootstrap.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.app.DB.Ping(ctx); err == nil {
+	if err := svc.database.Ping(ctx); err == nil {
 		t.Fatal("pool retained after close")
 	}
 	canceled, stopCanceled := context.WithCancel(ctx)
