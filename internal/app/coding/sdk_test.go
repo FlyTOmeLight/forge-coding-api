@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	serrors "github.com/FlyTOmeLight/server-go/errors"
+
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 func TestPublicSDKCallsCodingControllers(t *testing.T) {

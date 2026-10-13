@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 type CodingSettings codingv1.Settings

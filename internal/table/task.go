@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	"github.com/jackc/pgx/v5"
+
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 type Task codingv1.Task

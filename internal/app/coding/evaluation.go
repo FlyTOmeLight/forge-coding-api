@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	serrors "github.com/FlyTOmeLight/server-go/errors"
 	"github.com/FlyTOmeLight/server-go/logger"
 	core "github.com/FlyTOmeLight/server-go/pkg"
@@ -21,6 +20,7 @@ import (
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 type evaluationScope = codingv1.EvaluationScope

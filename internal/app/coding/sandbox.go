@@ -11,11 +11,11 @@ import (
 	"strconv"
 	"strings"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	core "github.com/FlyTOmeLight/server-go/pkg"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/workspace"
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 type sandboxScope = codingv1.ToolScope

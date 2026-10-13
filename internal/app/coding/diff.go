@@ -3,12 +3,12 @@ package coding
 import (
 	"errors"
 
-	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 	core "github.com/FlyTOmeLight/server-go/pkg"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/FlyTOmeLight/forge-coding-api/internal/client/gitlab"
 	"github.com/FlyTOmeLight/forge-coding-api/internal/table"
+	codingv1 "github.com/FlyTOmeLight/forge-coding-api/sdk/go/codingv1"
 )
 
 type TaskDiff = codingv1.TaskDiff
