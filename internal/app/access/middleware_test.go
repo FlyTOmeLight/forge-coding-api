@@ -19,8 +19,8 @@ func TestProjectAuthorizationPrecedesBinding(t *testing.T) {
 		name, body    string
 		level, status int
 	}{
-		{"hidden-project", `{"unknown":true}`, 0, 404},
-		{"visible-project", `{}`, 30, 200},
+		{name: "hidden-project", body: `{"unknown":true}`, level: 0, status: 404},
+		{name: "visible-project", body: `{}`, level: 30, status: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			checks := 0
